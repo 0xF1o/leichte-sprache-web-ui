@@ -124,7 +124,7 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             <option value="low">low – wenig denken</option>
             <option value="medium">medium – ausgewogen</option>
             <option value="high">high – gründlich denken</option>
-            <option value="xhigh">xhigh – sehr gründlich (Qwen-Standard)</option>
+            <option value="xhigh">xhigh – sehr gründlich</option>
           </select>
           <span className="mt-1 block text-xs text-slate-500">
             Gilt nur für Reasoning-Modelle. Nicht unterstützte Parameter werden vom Server meist ignoriert.
