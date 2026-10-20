@@ -1,0 +1,19 @@
+services:
+  lswui:
+    build:
+      context: .
+      args:
+        # Optionale Voreinstellungen – der Benutzer kann sie auch in der UI ändern
+        VITE_ANALYSE_URL: ${VITE_ANALYSE_URL:-https://api.leichte-sprache.ai/analyse?format=full}
+        VITE_LLM_BASE_URL: ${VITE_LLM_BASE_URL:-}
+        VITE_LLM_MODEL: ${VITE_LLM_MODEL:-}
+        VITE_LLM_API_KEY: ${VITE_LLM_API_KEY:-}
+    image: lswui:latest
+    ports:
+      - "${LSWUI_PORT:-8087}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
