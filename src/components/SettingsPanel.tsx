@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DEFAULT_ANALYSE_URL } from "../lib/analyse";
+import { testToolCalling } from "../lib/llm";
 import type { AppSettings } from "../lib/types";
 
 const STORAGE_KEY = "lswui.llmsettings";
@@ -23,6 +24,22 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
   const [remember, setRemember] = useState(() => loadStored() !== null);
   const [models, setModels] = useState<string[]>([]);
   const [modelHint, setModelHint] = useState<string | null>(null);
+  const [toolTest, setToolTest] = useState<{ running: boolean; ok: boolean | null; message: string | null }>({
+    running: false,
+    ok: null,
+    message: null,
+  });
+
+  const runToolTest = async () => {
+    setToolTest({ running: true, ok: null, message: null });
+    try {
+      const result = await testToolCalling(settings);
+      setToolTest({ running: false, ok: result.ok, message: result.message });
+    } catch (err) {
+      console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
+      setToolTest({ running: false, ok: false, message: `Test fehlgeschlagen: ${(err as Error).message}` });
+    }
+  };
 
   const set = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
 
@@ -141,22 +158,37 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
         </label>
-        <label className="flex items-start gap-2 sm:col-span-2">
-          <input
-            type="checkbox"
-            checked={settings.selfCheck}
-            onChange={(e) => set({ selfCheck: e.target.checked })}
-            disabled={disabled}
-            className="mt-0.5 h-4 w-4 rounded border-slate-600"
-          />
-          <span className="text-sm text-slate-400">
-            Selbstprüfung (Tool Calling): Das Modell darf die Analyse selbst auf seinen eigenen Text anwenden und ihn
-            überarbeiten.
-            <span className="block text-xs text-slate-500">
-              Nur aktivieren, wenn das Modell Tool-Calling unterstützt. Dauert länger (mehr Runden).
+        <div className="sm:col-span-2">
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={settings.selfCheck}
+              onChange={(e) => set({ selfCheck: e.target.checked })}
+              disabled={disabled}
+              className="mt-0.5 h-4 w-4 rounded border-slate-600"
+            />
+            <span className="text-sm text-slate-400">
+              Selbstprüfung (Tool Calling): Das Modell darf die Analyse selbst auf seinen eigenen Text anwenden und ihn
+              überarbeiten.
+              <span className="block text-xs text-slate-500">
+                Nur aktivieren, wenn das Modell Tool-Calling unterstützt. Dauert länger (mehr Runden).
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+          <div className="mt-1 pl-6">
+            <button
+              type="button"
+              onClick={() => void runToolTest()}
+              disabled={disabled || toolTest.running || !settings.baseUrl.trim() || !settings.model.trim()}
+              className="text-xs text-blue-400 hover:underline disabled:text-slate-600"
+            >
+              {toolTest.running ? "Teste Tool-Calling …" : "Tool-Calling mit diesem Modell testen"}
+            </button>
+            {toolTest.message && (
+              <p className={`mt-1 text-xs ${toolTest.ok ? "text-green-400" : "text-red-300"}`}>{toolTest.message}</p>
+            )}
+          </div>
+        </div>
         <label className="flex items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"

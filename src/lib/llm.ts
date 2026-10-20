@@ -310,6 +310,10 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
   let fullEmitted = false;
   let receivedAny = false;
   let sawSseData = false;
+  // Diagnose-Informationen für Fehlermeldungen
+  let dataLines = 0;
+  let thinkingChars = 0;
+  let finishReason: string | null = null;
   // Tool-Calls nach Index akkumulieren (Argumente kommen in Stücken)
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -330,9 +334,11 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
     if (payload === "[DONE]") return;
+    dataLines += 1;
     try {
       const json = JSON.parse(payload) as {
         choices?: {
+          finish_reason?: string | null;
           delta?: {
             content?: string;
             reasoning_content?: string;
@@ -348,10 +354,12 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
         }[];
       };
       const choice = json.choices?.[0];
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
       const source = choice?.delta ?? choice?.message;
       if (!source) return;
       const thinking = source.reasoning_content ?? source.reasoning ?? "";
       if (thinking) {
+        thinkingChars += thinking.length;
         callbacks?.onThinking?.(thinking);
         receivedAny = true;
       }
@@ -428,6 +436,24 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
 
   if (fullEmitted && !receivedAny) callbacks?.onFirstToken?.();
 
+  if (!full.trim() && toolCalls.size === 0) {
+    // Antwort ohne Inhalt und ohne Tool-Calls: aussagekräftig melden
+    const details = [
+      `Empfangen: ${dataLines} Datenzeilen`,
+      `${thinkingChars} Zeichen Denken`,
+      finishReason ? `finish_reason: ${finishReason}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    console.error("LSWUI: Modell lieferte keine Antwort", { details, contentType, base: base + "/chat/completions" });
+    throw new Error(
+      `Das Modell hat keine Antwort geliefert (${details}). ` +
+        "Mögliche Ursachen: Antwort-Limit (max tokens) erreicht, Abbruch im Server, " +
+        "oder das Modell denkt nur, ohne etwas zu schreiben (Reasoning-Aufwand ändern oder anderes Modell). " +
+        "Details in der Browser-Konsole (F12).",
+    );
+  }
+
   return {
     content: full,
     toolCalls: [...toolCalls.entries()]
@@ -450,6 +476,8 @@ export interface FixSessionResult {
   text: string;
   /** Voller Gesprächsverlauf (inkl. Tool-Calls und -Ergebnissen) für die Anzeige */
   messages: ChatMessage[];
+  /** Warnung, wenn eine Runde fehlgeschlagen ist, aber ein brauchbarer Entwurf existiert */
+  warning?: string;
 }
 
 interface FixSessionOptions {
@@ -482,16 +510,34 @@ export async function runFixSession({
   for (let round = 1; round <= maxRounds; round++) {
     callbacks?.onRound?.(round, maxRounds);
 
-    const { content, toolCalls } = await streamChat({
-      settings,
-      messages,
-      signal,
-      tools: [ANALYSE_TOOL],
-      callbacks: {
-        onToken: callbacks?.onToken,
-        onThinking: callbacks?.onThinking,
-      },
-    });
+    let content: string;
+    let toolCalls: ToolCallResult[];
+    try {
+      const result = await streamChat({
+        settings,
+        messages,
+        signal,
+        tools: [ANALYSE_TOOL],
+        callbacks: {
+          onToken: callbacks?.onToken,
+          onThinking: callbacks?.onThinking,
+        },
+      });
+      content = result.content;
+      toolCalls = result.toolCalls;
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw err;
+      const msg = (err as Error).message;
+      // Bei späteren Runden mit vorhandenem Entwurf: den besten Entwurf liefern
+      if (lastContent.trim()) {
+        return {
+          text: lastContent,
+          messages,
+          warning: `Runde ${round}/${maxRounds} fehlgeschlagen (${msg}). Es wird der bisher beste Entwurf verwendet.`,
+        };
+      }
+      throw new Error(`Runde ${round}/${maxRounds}: ${msg}`);
+    }
     if (content.trim()) lastContent = content;
 
     if (toolCalls.length === 0) {
@@ -537,4 +583,55 @@ export function buildFixMessages(text: string, issues: Issue[], annotatedText?: 
     { role: "system", content: selfCheck ? SYSTEM_PROMPT + SELF_CHECK_INSTRUCTIONS : SYSTEM_PROMPT },
     { role: "user", content: buildUserPrompt(text, issues, annotatedText) },
   ];
+}
+
+export interface ToolTestResult {
+  ok: boolean;
+  message: string;
+  ms: number;
+}
+
+/**
+ * Kleiner Live-Test, ob das eingestellte Modell Tool-Calling unterstützt:
+ * Das Modell soll auf eine Testanfrage zwingend das Tool analyse_text aufrufen.
+ * Läuft mit minimalem Reasoning, damit der Test schnell bleibt.
+ */
+export async function testToolCalling(settings: AppSettings): Promise<ToolTestResult> {
+  const t0 = Date.now();
+  try {
+    const res = await streamChat({
+      settings: { ...settings, reasoningEffort: "minimal" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Du bist ein Test-Assistent. Wenn der Nutzer einen Text prüfen lässt, rufe zwingend das Tool analyse_text mit genau diesem Text auf.",
+        },
+        { role: "user", content: "Prüfe diesen Text: Hallo Welt." },
+      ],
+      tools: [ANALYSE_TOOL],
+    });
+    const ms = Date.now() - t0;
+    if (res.toolCalls.length > 0) {
+      const name = res.toolCalls[0].name;
+      return {
+        ok: name === "analyse_text",
+        message:
+          name === "analyse_text"
+            ? `Tool-Calling funktioniert: Tool „analyse_text“ wurde in ${(ms / 1000).toFixed(1)} s aufgerufen.`
+            : `Das Modell hat ein anderes Tool aufgerufen: „${name}“.`,
+        ms,
+      };
+    }
+    return {
+      ok: false,
+      message: `Das Modell hat kein Tool aufgerufen, sondern direkt geantwortet${
+        res.content ? `: „${res.content.trim().slice(0, 100)}“` : ""
+      }. Tool-Calling wird vermutlich nicht unterstützt.`,
+      ms,
+    };
+  } catch (err) {
+    console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
+    return { ok: false, message: `Test fehlgeschlagen: ${(err as Error).message}`, ms: Date.now() - t0 };
+  }
 }

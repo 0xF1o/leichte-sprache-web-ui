@@ -139,6 +139,7 @@ export default function App() {
   const [fixedText, setFixedText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [fixAborted, setFixAborted] = useState(false);
+  const [fixWarning, setFixWarning] = useState<string | null>(null);
   const [fixError, setFixError] = useState<string | null>(null);
   const [fixSeconds, setFixSeconds] = useState(0);
   const [firstTokenSeconds, setFirstTokenSeconds] = useState<number | null>(null);
@@ -285,6 +286,7 @@ export default function App() {
     setStage("analysing");
     setAnalysisError(null);
     setFixAborted(false);
+    setFixWarning(null);
     setFixError(null);
     setFixedText("");
     setConversation(null);
@@ -317,6 +319,7 @@ export default function App() {
     setFixedText("");
     setThinkingText("");
     setFixAborted(false);
+    setFixWarning(null);
     setFixError(null);
     setFirstTokenSeconds(null);
     tokensRef.current = 0;
@@ -368,12 +371,18 @@ export default function App() {
         });
         setConversation(session.messages);
         raw = session.text;
+        if (session.warning) setFixWarning(session.warning);
       } else {
         const result = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
         raw = result.content;
       }
       const cleaned = cleanModelOutput(raw);
-      if (!cleaned.trim()) throw new Error("Das Modell hat keine Antwort geliefert.");
+      if (!cleaned.trim()) {
+        console.error("LSWUI: Modell-Antwort war nach dem Aufräumen leer. Rohe Antwort:", JSON.stringify(raw));
+        throw new Error(
+          "Das Modell hat keine verwertbare Antwort geliefert (leer oder nur Formatierung wie Anführungszeichen). Details in der Browser-Konsole (F12).",
+        );
+      }
       setFixedText(cleaned);
       setStage("fixed");
       setFlash({ text: "✅ Fertig! – Leichte Sprache", key: Date.now() });
@@ -385,7 +394,8 @@ export default function App() {
         setStage("results");
         return;
       }
-      setFixError((err as Error).message);
+      console.error("LSWUI: Korrektur fehlgeschlagen:", err);
+      setFixError((err as Error).message || String(err));
       setStage("results");
     }
   };
@@ -728,7 +738,14 @@ export default function App() {
                 </div>
               )}
 
-              {fixError && <p className="mt-3 rounded-lg bg-red-950/60 p-3 text-sm text-red-300">{fixError}</p>}
+              {fixWarning && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">{fixWarning}</p>}
+
+              {fixError && (
+                <p className="mt-3 rounded-lg bg-red-950/60 p-3 text-sm text-red-300">
+                  {fixError}
+                  <span className="block text-xs text-red-300/70">Technische Details: Browser-Konsole (F12)</span>
+                </p>
+              )}
 
               {stage === "fixed" && (
                 <div className="mt-4 space-y-4">
