@@ -24,6 +24,7 @@ function defaultSettings(): AppSettings {
     baseUrl: stored?.baseUrl || import.meta.env.LSWUI_BASE_URL || "",
     model: stored?.model || import.meta.env.LSWUI_MODEL || "",
     apiKey: stored?.apiKey || import.meta.env.LSWUI_API_KEY || "",
+    reasoningEffort: stored?.reasoningEffort || "",
   };
 }
 
@@ -323,6 +324,10 @@ export default function App() {
                     Prompt und Konversation mit der KI anzeigen
                   </summary>
                   <div className="space-y-4 px-3 pb-3">
+                    <p className="text-xs text-slate-500">
+                      Anfrage-Parameter: <code className="text-slate-400">model={settings.model}</code>
+                      {settings.reasoningEffort && (" " + <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>)}
+                    </p>
                     {lastPrompt.map((msg, i) => (
                       <div key={i}>
                         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">

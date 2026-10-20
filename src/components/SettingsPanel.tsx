@@ -112,6 +112,24 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
           </button>
         </label>
         <label className="block">
+          <span className="mb-1 block text-sm text-slate-400">Denk-Aufwand (Reasoning Effort)</span>
+          <select
+            value={settings.reasoningEffort}
+            onChange={(e) => set({ reasoningEffort: e.target.value as AppSettings["reasoningEffort"] })}
+            disabled={disabled}
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+          >
+            <option value="">Automatisch (Modell-Standard)</option>
+            <option value="minimal">Minimal – so schnell wie möglich</option>
+            <option value="low">Niedrig</option>
+            <option value="medium">Mittel</option>
+            <option value="high">Hoch – gründlichstes Denken</option>
+          </select>
+          <span className="mt-1 block text-xs text-slate-500">
+            Gilt nur für Reasoning-Modelle. Nicht unterstützte Parameter werden vom Server meist ignoriert.
+          </span>
+        </label>
+        <label className="block">
           <span className="mb-1 block text-sm text-slate-400">API-Schlüssel</span>
           <input
             type="password"

@@ -62,7 +62,12 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
         "Content-Type": "application/json",
         ...(settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {}),
       },
-      body: JSON.stringify({ model: settings.model, messages, stream: true }),
+      body: JSON.stringify({
+        model: settings.model,
+        messages,
+        stream: true,
+        ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
+      }),
       signal,
     });
   } catch (err) {
