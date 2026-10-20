@@ -43,10 +43,12 @@ Optional Voreinstellungen setzen (siehe `.env.example`):
 cp .env.example .env
 ```
 
-- `VITE_ANALYSE_URL` – z. B. `https://api.leichte-sprache.ai/analyse?format=full`
-- `VITE_LLM_BASE_URL` – z. B. `https://beispiel.de/v1`
-- `VITE_LLM_MODEL` – Modellname
-- `VITE_LLM_API_KEY` – API-Schlüssel
+- `LSWUI_ANALYSE_URL` – z. B. `https://api.leichte-sprache.ai/analyse?format=full`
+- `LSWUI_BASE_URL` – z. B. `https://beispiel.de/v1`
+- `LSWUI_MODEL` – Modellname
+- `LSWUI_API_KEY` – API-Schlüssel
+
+(Vite wird über `envPrefix: "LSWUI_"` konfiguriert, damit diese Variablen an die App übergeben werden.)
 
 Alles lässt sich auch zur Laufzeit in der Sektion *„Modell-Einstellungen“* ändern.
 Der Button *„Modelle laden“* ruft `GET /v1/models` auf und füllt die Modell-Auswahl.

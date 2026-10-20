@@ -20,10 +20,10 @@ function defaultSettings(): AppSettings {
     /* ignore */
   }
   return {
-    analyseUrl: stored?.analyseUrl || import.meta.env.VITE_ANALYSE_URL || DEFAULT_ANALYSE_URL,
-    baseUrl: stored?.baseUrl || import.meta.env.VITE_LLM_BASE_URL || "",
-    model: stored?.model || import.meta.env.VITE_LLM_MODEL || "",
-    apiKey: stored?.apiKey || import.meta.env.VITE_LLM_API_KEY || "",
+    analyseUrl: stored?.analyseUrl || import.meta.env.LSWUI_ANALYSE_URL || DEFAULT_ANALYSE_URL,
+    baseUrl: stored?.baseUrl || import.meta.env.LSWUI_BASE_URL || "",
+    model: stored?.model || import.meta.env.LSWUI_MODEL || "",
+    apiKey: stored?.apiKey || import.meta.env.LSWUI_API_KEY || "",
   };
 }
 
