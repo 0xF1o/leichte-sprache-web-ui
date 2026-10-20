@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { diffWords } from "diff";
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
 }
 
 /** Wort-Diff: Gelösches wird rot durchgestrichen, Neues grün hervorgehoben. */
-export function DiffView({ original, corrected }: Props) {
+export const DiffView = memo(function DiffView({ original, corrected }: Props) {
   const parts = useMemo(() => diffWords(original, corrected), [original, corrected]);
 
   return (
@@ -31,4 +31,4 @@ export function DiffView({ original, corrected }: Props) {
       })}
     </div>
   );
-}
+});

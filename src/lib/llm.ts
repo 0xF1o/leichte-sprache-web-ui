@@ -1,3 +1,4 @@
+import { CONNECT_TIMEOUT_MS, withConnectTimeout } from "./analyse";
 import type { AppSettings, Issue } from "./types";
 
 /**
@@ -87,6 +88,30 @@ const SELF_CHECK_INSTRUCTIONS = [
   "5. Gib als finale Antwort NUR den besten finalen Text aus. Kein Analyse-Ergebnis, keine Kommentare.",
 ].join("\n");
 
+/** Menschenlesbare Anzeige-Namen der Regeln (gemeinsam mit IssueList verwendet). */
+export const RULE_LABELS: Record<string, string> = {
+  satzlaenge: "Satzlänge",
+  mehrere_aussagen: "Mehrere Aussagen",
+  passiv_erkennung: "Passiv",
+  fremdwoerter: "Fremdwörter",
+  komposita: "Komposita",
+  kurze_woerter: "Wortlänge",
+  komplexitaet: "Komplexität",
+  perplexity_saetze: "Perplexität",
+  groesse: "Textlänge",
+};
+
+/** Entfernt das technische Suffix, z. B. „fremdwoerter_issue“ → „fremdwoerter“. */
+export function ruleBaseId(ruleId: string): string {
+  return ruleId.replace(/_issue$/, "");
+}
+
+/** Menschenlesbarer Regel-Name mit Fallback auf die (aufgeräumte) rohe ID. */
+export function ruleLabel(ruleId: string): string {
+  const base = ruleBaseId(ruleId);
+  return RULE_LABELS[base] ?? base;
+}
+
 /** Deutliche Anleitung pro Regel (ersetzt die technischen Regel-IDs im Prompt). */
 const RULE_HINTS: Record<string, string> = {
   satzlaenge: "Satz ist zu lang oder zu komplex – in mehrere kurze Sätze teilen (max. 10 Wörter)",
@@ -101,7 +126,7 @@ const RULE_HINTS: Record<string, string> = {
 };
 
 function ruleHint(ruleId: string): string {
-  const base = ruleId.replace(/_issue$/, "");
+  const base = ruleBaseId(ruleId);
   return RULE_HINTS[base] ?? base;
 }
 
@@ -190,8 +215,8 @@ export interface ToolCallResult {
 export function cleanModelOutput(raw: string): string {
   let out = raw.trim();
 
-  // Code-Block um den ganzen Text entfernen
-  const fence = out.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/);
+  // Code-Block um den ganzen Text entfernen (auch wenn nur die schließende Zeile fehlt)
+  const fence = out.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)(?:\n?```\s*)?$/);
   if (fence) out = fence[1].trim();
 
   // Umgebende Anführungszeichen entfernen (paarweise)
@@ -214,8 +239,10 @@ export function cleanModelOutput(raw: string): string {
     }
   }
 
-  // Kurze Einleitungssätze entfernen, z. B. „Hier ist der korrigierte Text:“
-  out = out.replace(/^(?:Hier (?:ist|sind|kommt)|Dies ist|Das ist|Folgend|Nachfolgend)[^.!?\n]{0,60}[:\n]\s*/i, "");
+  // Kurze Einleitungszeile entfernen, z. B. „Hier ist der korrigierte Text:“
+  // Nur erste Zeile und nur mit abschließendem Doppelpunkt, damit echte
+  // Textanfänge (z. B. „Das ist wichtig.“) erhalten bleiben.
+  out = out.replace(/^(?:Hier (?:ist|sind|kommt)|Dies ist|Das ist|Folgendes?|Nachfolgend)(?: [^.!?\n:]{0,60})?:(?:\n+|\s*$)/i, "");
 
   return out.trim();
 }
@@ -251,9 +278,13 @@ interface StreamChatResult {
  */
 export async function streamChat({ settings, messages, callbacks, signal, tools }: StreamChatOptions): Promise<StreamChatResult> {
   const base = settings.baseUrl.trim().replace(/\/+$/, "");
+  const url = `${base}/chat/completions`;
+  // Verbindungs-Timeout: bis die Antwort beginnt. Danach darf das Streamen
+  // beliebig lange dauern (lokale Modelle sind langsam).
+  const guard = withConnectTimeout(signal);
   let res: Response;
   try {
-    res = await fetch(`${base}/chat/completions`, {
+    res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -266,16 +297,26 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
         ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
         ...(tools && tools.length > 0 ? { tools } : {}),
       }),
-      signal,
+      signal: guard.signal,
     });
   } catch (err) {
-    if ((err as Error).name === "AbortError") throw err;
+    guard.done();
+    if ((err as Error).name === "AbortError") {
+      if (guard.timedOut) {
+        throw new Error(
+          `Zeitüberschreitung: Der Modell-Endpunkt hat nicht innerhalb von ${CONNECT_TIMEOUT_MS / 1000} s geantwortet. ` +
+            `Geprüfte Adresse: ${url}`,
+        );
+      }
+      throw err;
+    }
     throw new Error(
       "Das Modell-Endpunkt hat die Anfrage im Browser abgelehnt. " +
         "Ursache ist meist CORS oder die Erreichbarkeit des Servers. " +
-        `Geprüfte Adresse: ${base}/chat/completions`,
+        `Geprüfte Adresse: ${url}`,
     );
   }
+  guard.done();
 
   if (!res.ok) {
     let detail = "";
@@ -380,21 +421,32 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    if (isSse) {
-      let newlineIdx: number;
-      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newlineIdx).replace(/\r$/, "");
-        buffer = buffer.slice(newlineIdx + 1);
-        if (line) {
-          sawSseData = true;
-          handleSseLine(line);
+      if (isSse) {
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIdx).replace(/\r$/, "");
+          buffer = buffer.slice(newlineIdx + 1);
+          if (line) {
+            sawSseData = true;
+            handleSseLine(line);
+          }
         }
       }
+    }
+    // Decoder-Warteschlange leeren (letzte, noch unvollständige Teilzeichen)
+    buffer += decoder.decode();
+  } finally {
+    // Reader immer freigeben – auch wenn read() fehlgeschlagen ist
+    try {
+      reader.releaseLock();
+    } catch {
+      /* bereits geschlossen */
     }
   }
   if (sawSseData && buffer) handleSseLine(buffer);
@@ -458,7 +510,13 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
     content: full,
     toolCalls: [...toolCalls.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([, tc]) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })),
+      .map(([i, tc]) => ({
+        // Manche Server liefern keine ID – dann eine erzeugen, damit der
+        // Gesprächsverlauf (tool_call_id) gültig bleibt.
+        id: tc.id || `auto_call_${i}_${Date.now().toString(36)}`,
+        name: tc.name,
+        arguments: tc.arguments,
+      })),
   };
 }
 
@@ -568,14 +626,25 @@ export async function runFixSession({
       try {
         result = await executeTool(tc.name, args);
       } catch (err) {
+        // Nutzer-Abbruch durchreichen, damit die ganze Sitzung stoppt
+        if ((err as Error).name === "AbortError") throw err;
         result = `Tool-Fehler: ${(err as Error).message}`;
       }
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       callbacks?.onToolResult?.(tc.name, result);
       messages.push({ role: "tool", tool_call_id: tc.id, content: result });
     }
   }
 
-  return { text: lastContent, messages };
+  // Maximale Rundenzahl erreicht: Das Modell hat (noch) keine finale Antwort gegeben.
+  if (!lastContent.trim()) {
+    throw new Error(`Maximale Rundenzahl (${maxRounds}) erreicht – das Modell hat aber keinen Text geliefert.`);
+  }
+  return {
+    text: lastContent,
+    messages,
+    warning: `Maximale Rundenzahl (${maxRounds}) erreicht – die letzte Version wurde nicht mehr durch die Analyse geprüft.`,
+  };
 }
 
 export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string, selfCheck = false): ChatMessage[] {
@@ -596,11 +665,12 @@ export interface ToolTestResult {
  * Das Modell soll auf eine Testanfrage zwingend das Tool analyse_text aufrufen.
  * Läuft mit minimalem Reasoning, damit der Test schnell bleibt.
  */
-export async function testToolCalling(settings: AppSettings): Promise<ToolTestResult> {
+export async function testToolCalling(settings: AppSettings, signal?: AbortSignal): Promise<ToolTestResult> {
   const t0 = Date.now();
   try {
     const res = await streamChat({
       settings: { ...settings, reasoningEffort: "minimal" },
+      signal,
       messages: [
         {
           role: "system",
@@ -632,6 +702,7 @@ export async function testToolCalling(settings: AppSettings): Promise<ToolTestRe
     };
   } catch (err) {
     console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
-    return { ok: false, message: `Test fehlgeschlagen: ${(err as Error).message}`, ms: Date.now() - t0 };
+    const label = (err as Error).name === "AbortError" ? "Test abgebrochen." : `Test fehlgeschlagen: ${(err as Error).message}`;
+    return { ok: false, message: label, ms: Date.now() - t0 };
   }
 }

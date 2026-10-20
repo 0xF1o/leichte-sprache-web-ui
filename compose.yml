@@ -3,17 +3,20 @@ services:
     build:
       context: .
       args:
-        # Optionale Voreinstellungen – der Benutzer kann sie auch in der UI ändern
+        # Optionale Voreinstellungen – der Benutzer kann sie auch in der UI ändern.
+        # Hinweis: Build-Zeit-Werte sind öffentlich im Bundle sichtbar.
+        # Deshalb bewusst KEIN LSWUI_API_KEY als Argument!
         LSWUI_ANALYSE_URL: ${LSWUI_ANALYSE_URL:-https://api.leichte-sprache.ai/analyse?format=full}
         LSWUI_BASE_URL: ${LSWUI_BASE_URL:-}
         LSWUI_MODEL: ${LSWUI_MODEL:-}
-        LSWUI_API_KEY: ${LSWUI_API_KEY:-}
     image: lswui:latest
     ports:
-      - "${LSWUI_PORT:-8087}:80"
+      - "${LSWUI_PORT:-8087}:8080"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      # 127.0.0.1 statt localhost: nginx bindet hier nur IPv4, und busybox-
+      # wget würde sonst zuerst ::1 probieren und den Healthcheck scheitern lassen.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
       interval: 30s
       timeout: 5s
       retries: 3

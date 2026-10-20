@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
+import { ruleLabel } from "../lib/llm";
 
 interface Props {
   text: string;
@@ -16,7 +17,7 @@ interface Part {
  * (Antwort der Analyse-API mit format=annotated_text).
  * Marker werden als kleine Amberglieder mit Tooltip dargestellt.
  */
-export function AnnotatedMarkers({ text }: Props) {
+export const AnnotatedMarkers = memo(function AnnotatedMarkers({ text }: Props) {
   const parts = useMemo<Part[]>(() => {
     const out: Part[] = [];
     let i = 0;
@@ -51,10 +52,11 @@ export function AnnotatedMarkers({ text }: Props) {
         part.type === "marker" ? (
           <mark
             key={i}
-            title={`${part.rule}${part.message ? ` – ${part.message}` : ""}`}
-            className="mx-0.5 rounded bg-amber-400/30 px-1 align-super text-[0.6em] font-semibold text-amber-100"
+            tabIndex={0}
+            title={`${ruleLabel(part.rule ?? "")}${part.message ? ` – ${part.message}` : ""}`}
+            className="mx-0.5 rounded bg-amber-400/30 px-1 align-super text-[0.6em] font-semibold text-amber-100 outline-offset-2 focus:outline focus:outline-2 focus:outline-amber-300"
           >
-            ✗ {part.rule}
+            ✗ {ruleLabel(part.rule ?? "")}
           </mark>
         ) : (
           <span key={i}>{part.value}</span>
@@ -62,4 +64,4 @@ export function AnnotatedMarkers({ text }: Props) {
       )}
     </p>
   );
-}
+});

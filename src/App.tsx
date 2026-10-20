@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
-import { buildFixMessages, cleanModelOutput, runFixSession, streamChat, type ChatMessage } from "./lib/llm";
+import { buildFixMessages, cleanModelOutput, ruleLabel, runFixSession, streamChat, type ChatMessage } from "./lib/llm";
 import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
@@ -18,23 +18,73 @@ function clampRounds(v: number | undefined): number {
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
+const REASONING_EFFORTS: readonly string[] = ["", "minimal", "low", "medium", "high", "xhigh"];
+
+/**
+ * Validiert die in localStorage gespeicherten Einstellungen (unbekannter
+ * Ursprung) und gibt nur Felder zurück, die den erwarteten Typen entsprechen.
+ */
+function sanitizeStored(raw: unknown): Partial<AppSettings> {
+  if (!raw || typeof raw !== "object") return {};
+  const o = raw as Record<string, unknown>;
+  const str = (k: string): string | undefined => (typeof o[k] === "string" ? (o[k] as string) : undefined);
+  const out: Partial<AppSettings> = {};
+  const a = str("analyseUrl");
+  if (a !== undefined) out.analyseUrl = a;
+  const b = str("baseUrl");
+  if (b !== undefined) out.baseUrl = b;
+  const m = str("model");
+  if (m !== undefined) out.model = m;
+  const k = str("apiKey");
+  if (k !== undefined) out.apiKey = k;
+  const r = str("reasoningEffort");
+  if (r !== undefined) out.reasoningEffort = REASONING_EFFORTS.includes(r) ? (r as AppSettings["reasoningEffort"]) : "";
+  if (typeof o.selfCheck === "boolean") out.selfCheck = o.selfCheck;
+  if (typeof o.maxRounds === "number") out.maxRounds = clampRounds(o.maxRounds);
+  return out;
+}
+
 function defaultSettings(): AppSettings {
-  let stored: AppSettings | null = null;
+  let stored: Partial<AppSettings> = {};
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    stored = raw ? (JSON.parse(raw) as AppSettings) : null;
+    stored = raw ? sanitizeStored(JSON.parse(raw)) : {};
   } catch {
     /* ignore */
   }
+  // Bewusst „??“, nicht „||“: ein bewusst geleertes Feld (z. B. "") bleibt leer,
+  // statt still zurück auf den Build-Zeit-Wert zu fallen.
   return {
-    analyseUrl: stored?.analyseUrl || import.meta.env.LSWUI_ANALYSE_URL || DEFAULT_ANALYSE_URL,
-    baseUrl: stored?.baseUrl || import.meta.env.LSWUI_BASE_URL || "",
-    model: stored?.model || import.meta.env.LSWUI_MODEL || "",
-    apiKey: stored?.apiKey || import.meta.env.LSWUI_API_KEY || "",
-    reasoningEffort: stored?.reasoningEffort || "",
-    selfCheck: stored?.selfCheck ?? false,
-    maxRounds: clampRounds(stored?.maxRounds),
+    analyseUrl: stored.analyseUrl ?? import.meta.env.LSWUI_ANALYSE_URL ?? DEFAULT_ANALYSE_URL,
+    baseUrl: stored.baseUrl ?? import.meta.env.LSWUI_BASE_URL ?? "",
+    model: stored.model ?? import.meta.env.LSWUI_MODEL ?? "",
+    apiKey: stored.apiKey ?? import.meta.env.LSWUI_API_KEY ?? "",
+    reasoningEffort: stored.reasoningEffort ?? "",
+    selfCheck: stored.selfCheck ?? false,
+    maxRounds: clampRounds(stored.maxRounds),
   };
+}
+
+/** Text in die Zwischenablage – mit Fallback für Kontexte ohne Clipboard-Write-Zugriff. */
+async function copyToClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function Spinner() {
@@ -48,11 +98,18 @@ function formatSeconds(total: number): string {
 }
 
 /** Anzahl-Unterschied nach der Korrektur (negativ = weniger Probleme). null = nicht vergleichbar. */
+/**
+ * Markierungen der annotierten Analyse im Text: [regel: …] bzw. [regel].
+ * Bewusst NUR dieses enge Muster – von Nutzern geschriebene eckige Klammern
+ * werden so nicht mitgezählt.
+ */
+const MARKER_RE = /\[[a-z0-9_]+(?::[^\[\]]*)?\]/gi;
+
 function countDelta(before: AnalyseResult, after: AnalyseResult): number | null {
   if (before.statistics && after.statistics) {
     return after.statistics.total_violations - before.statistics.total_violations;
   }
-  const count = (s: string) => (s.match(/\[[^\[\]]+\]/g) ?? []).length;
+  const count = (s: string) => (s.match(MARKER_RE) ?? []).length;
   return count(after.annotatedText) - count(before.annotatedText);
 }
 
@@ -92,7 +149,7 @@ function RecheckReport({ before, after }: { before: AnalyseResult; after: Analys
               const av = a.violations_by_rule[r] ?? 0;
               return (
                 <tr key={r} className="border-t border-slate-800">
-                  <td className="py-1 text-slate-300">{r.replace(/_issue$/, "")}</td>
+                  <td className="py-1 text-slate-300">{ruleLabel(r)}</td>
                   <td className="text-slate-400">{bv}</td>
                   <td className={av < bv ? "text-green-400" : av > bv ? "text-red-400" : "text-slate-300"}>{av}</td>
                 </tr>
@@ -106,7 +163,7 @@ function RecheckReport({ before, after }: { before: AnalyseResult; after: Analys
   }
 
   // annotated_text-Modus: Markierungen zählen
-  const count = (s: string) => (s.match(/\[[^\[\]]+\]/g) ?? []).length;
+  const count = (s: string) => (s.match(MARKER_RE) ?? []).length;
   const b = count(before.annotatedText);
   const a = count(after.annotatedText);
   const d = a - b;
@@ -133,8 +190,12 @@ export default function App() {
 
   const [stage, setStage] = useState<Stage>("idle");
   const [analysis, setAnalysis] = useState<AnalyseResult | null>(null);
-  /** true, wenn die Analyse nur den annotierten Text liefert (format=annotated_text) */
-  const annotatedOnly = analysis != null && analysis.issues.length === 0;
+  /**
+   * true, wenn die Analyse nur den annotierten Text liefert
+   * (format=annotated_text). Erkennbar am FEHLEN der Statistik – nicht an
+   * issues.length (ein sauberer format=full-Text hat ebenfalls 0 Issues).
+   */
+  const annotatedOnly = analysis != null && analysis.statistics == null;
   const [analysedText, setAnalysedText] = useState("");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [conversation, setConversation] = useState<ChatMessage[] | null>(null);
@@ -163,18 +224,22 @@ export default function App() {
 
   // Tab-Titel-Blinker für „Aufmerksamkeit“ (endet nach kurzer Zeit)
   const [flash, setFlash] = useState<{ text: string; key: number } | null>(null);
+  const [copyNote, setCopyNote] = useState<string | null>(null);
+  const copyNoteTimerRef = useRef<number>(0);
 
   const abortRef = useRef<AbortController | null>(null);
+  /** Abbruch-Controller der gerade laufenden Nachanalyse */
+  const recheckAbortRef = useRef<AbortController | null>(null);
   const livePaneRef = useRef<HTMLDivElement | null>(null);
   const thinkingPaneRef = useRef<HTMLDivElement | null>(null);
   const fixStartRef = useRef(0);
   const tokensRef = useRef(0);
   const tokenSamplesRef = useRef<{ t: number; n: number }[]>([]);
 
-  // Zeitmesser während der Korrektur
+  // Zeitmesser während der Korrektur (fixStartRef wird in handleFix gesetzt,
+  // damit der Startzeitpunkt nicht nach dem ersten Token liegt)
   useEffect(() => {
     if (stage !== "fixing") return;
-    fixStartRef.current = Date.now();
     setFixSeconds(0);
     const id = setInterval(() => setFixSeconds(Math.floor((Date.now() - fixStartRef.current) / 1000)), 1000);
     return () => clearInterval(id);
@@ -189,6 +254,8 @@ export default function App() {
 
   // Tab-Titel: zeigt an, was gerade läuft (sichtbar, wenn nur der Reiter offen ist)
   useEffect(() => {
+    // Während eines Aufmerksamkeits-Blinks die Titel-Hoheit abgeben
+    if (flash) return;
     if (stage === "analysing") {
       document.title = "⏳ Analyse läuft …";
       return;
@@ -202,7 +269,7 @@ export default function App() {
       return;
     }
     document.title = BASE_TITLE;
-  }, [stage, thinkingText, fixedText]);
+  }, [stage, thinkingText, fixedText, flash]);
 
   // Aufmerksamkeits-Blink im Tab-Titel (endet von selbst, Icon stoppt)
   useEffect(() => {
@@ -287,6 +354,7 @@ export default function App() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    recheckAbortRef.current?.abort();
     recheckIdRef.current += 1;
     setRecheck(null);
     setStage("analysing");
@@ -320,6 +388,8 @@ export default function App() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    fixStartRef.current = Date.now();
+    recheckAbortRef.current?.abort();
     recheckIdRef.current += 1;
     setRecheck(null);
     setStage("fixing");
@@ -340,7 +410,7 @@ export default function App() {
       const messages = buildFixMessages(
         analysedText,
         analysis.issues,
-        analysis.issues.length > 0 ? undefined : analysis.annotatedText,
+        analysis.statistics != null ? undefined : analysis.annotatedText,
         settings.selfCheck,
       );
       setConversation(messages);
@@ -417,11 +487,10 @@ export default function App() {
   };
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(fixedText);
-    } catch {
-      /* ignore */
-    }
+    const ok = await copyToClipboard(fixedText);
+    setCopyNote(ok ? "In die Zwischenablage kopiert." : "Kopieren fehlgeschlagen – bitte Text manuell auswählen und kopieren.");
+    window.clearTimeout(copyNoteTimerRef.current);
+    copyNoteTimerRef.current = window.setTimeout(() => setCopyNote(null), 3000);
   };
 
   // Tool-Executor für die Selbstprüfung: führt analyse_text im Browser aus
@@ -429,10 +498,10 @@ export default function App() {
     if (name !== "analyse_text") return `Unbekanntes Tool: ${name}. Verfügbare Tools: analyse_text.`;
     const text = String(args.text ?? "").trim();
     if (!text) return "Kein Text übergeben. Bitte rufe das Tool mit dem vollständigen umgeschriebenen Text auf.";
-    const result = await analyseText(settings.analyseUrl.trim(), text);
+    const result = await analyseText(settings.analyseUrl.trim(), text, abortRef.current?.signal);
     if (result.statistics) {
       const lines = result.issues.slice(0, 15).map((issue, i) => {
-        return `${i + 1}. ${issue.rule_id.replace(/_issue$/, "")}: „${issue.text}“ – ${issue.message.slice(0, 200)}`;
+        return `${i + 1}. ${ruleLabel(issue.rule_id)}: „${issue.text}“ – ${issue.message.slice(0, 200)}`;
       });
       const more = result.issues.length > 15 ? `… und ${result.issues.length - 15} weitere Verstöße.` : "";
       const verdict =
@@ -455,14 +524,25 @@ export default function App() {
   // Nachanalyse des korrigierten Textes für den Vorher/Nachher-Vergleich
   const runRecheck = async (target: string) => {
     const id = ++recheckIdRef.current;
+    const controller = new AbortController();
+    recheckAbortRef.current = controller;
+    // Die Nachanalyse ist ein Kurzlauf – hart nach 30 s abbrechen,
+    // damit ein hängender Endpunkt keinen Spinner für immer zeigt.
+    const timer = window.setTimeout(() => controller.abort(), 30000);
     setRecheck({ running: true, result: null, error: null });
     try {
-      const result = await analyseText(settings.analyseUrl.trim(), target.trim());
+      const result = await analyseText(settings.analyseUrl.trim(), target.trim(), controller.signal);
       if (recheckIdRef.current === id) setRecheck({ running: false, result, error: null });
     } catch (err) {
-      if ((err as Error).name !== "AbortError" && recheckIdRef.current === id) {
-        setRecheck({ running: false, result: null, error: (err as Error).message });
+      if (recheckIdRef.current === id) {
+        if ((err as Error).name === "AbortError") {
+          setRecheck({ running: false, result: null, error: "Nachanalyse abgebrochen oder Zeitüberschreitung (30 s)." });
+        } else {
+          setRecheck({ running: false, result: null, error: (err as Error).message });
+        }
       }
+    } finally {
+      window.clearTimeout(timer);
     }
   };
 
@@ -524,7 +604,7 @@ export default function App() {
 
       {analysis && stage !== "analysing" && (
         <>
-          {analysis.issues.length > 0 && analysis.statistics ? (
+          {analysis.statistics != null ? (
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <h2 className="mb-3 text-lg font-semibold">Gefundene Probleme</h2>
               <IssueList issues={analysis.issues} statistics={analysis.statistics} />
@@ -553,7 +633,7 @@ export default function App() {
             )}
           </section>
 
-          {analysis.issues.length > 0 ? (
+          {analysis.issues.length > 0 || annotatedOnly ? (
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold">Korrektur durch die KI</h2>
@@ -738,6 +818,7 @@ export default function App() {
                       >
                         Teiltext kopieren
                       </button>
+                      {copyNote && <p className="mt-2 text-sm text-slate-300">{copyNote}</p>}
                     </div>
                   ) : (
                     <p className="text-sm text-slate-500">
@@ -791,6 +872,8 @@ export default function App() {
                       ) : null}
                     </div>
                   )}
+
+                  {copyNote && <p className="text-sm text-slate-300">{copyNote}</p>}
 
                   <div className="flex flex-wrap gap-3">
                     <button

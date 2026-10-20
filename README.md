@@ -25,10 +25,9 @@ OpenAI-kompatiblen KI-Modell korrigiert.
   Endpunkt gesendet und optional in `localStorage` gemerkt
 - Der komplette Prompt (System- und Nutzer-Nachricht) sowie die Antwort des Modells
   können in der Sektion *„Prompt und Konversation mit der KI anzeigen“* eingesehen werden
-- Hinweis: Das eigene Modell-Endpunkt muss **CORS** erlauben (z. B.
-  `Access-Control-Allow-Origin: *` und das `Authorization`-Header-Right). Die beiden
-  Endpunkt `api.leichte-sprache.ai` wurde entsprechend geprüft. Der eigene
-  Modell-Endpunkt muss dies ebenfalls erlauben.
+- Hinweis: Der eigene Modell-Endpunkt muss **CORS** erlauben (z. B.
+  `Access-Control-Allow-Origin: *` und `Authorization` in `Access-Control-Allow-Headers`).
+  Für `api.leichte-sprache.ai` ist dies entsprechend freigegeben.
 
 ## Starten
 
@@ -46,9 +45,15 @@ cp .env.example .env
 - `LSWUI_ANALYSE_URL` – z. B. `https://api.leichte-sprache.ai/analyse?format=full`
 - `LSWUI_BASE_URL` – z. B. `https://beispiel.de/v1`
 - `LSWUI_MODEL` – Modellname
-- `LSWUI_API_KEY` – API-Schlüssel
+- `LSWUI_API_KEY` – API-Schlüssel (NUR für die lokale Entwicklung – siehe Warnung oben unter Produktion)
 
 (Vite wird über `envPrefix: "LSWUI_"` konfiguriert, damit diese Variablen an die App übergeben werden.)
+
+> **Sicherheit:** Vite baut alle `LSWUI_*`-Werte zur Build-Zeit in das
+> öffentliche, statische JS-Bundle ein. Das Bundle sehen alle Besucher der Seite.
+> Deshalb nimmt der Docker-Build **keinen** `LSWUI_API_KEY` an – jeder Benutzer gibt
+> seinen Schlüssel zur Laufzeit in der Einstellungen-Sektion ein (Speicherung
+> optional, nur im eigenen Browser).
 
 Alles lässt sich auch zur Laufzeit in der Sektion *„Modell-Einstellungen“* ändern.
 Der Button *„Modelle laden“* ruft `GET /v1/models` auf und füllt die Modell-Auswahl.
@@ -57,21 +62,40 @@ Der Button *„Modelle laden“* ruft `GET /v1/models` auf und füllt die Modell
 
 ```bash
 npm run build      # erzeugt dist/ (statisch, auf jedem Webserver deploybar)
-npm run preview    # lokalen Test der Produktions-Build
+npm run preview    # lokalen Test des Produktions-Builds
 ```
+
+### Docker / Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Die App läuft danach unter `http://localhost:8087` (Port über `LSWUI_PORT` änderbar).
+Optional Voreinstellungen zum Build-Zeit einbauen (werden im Bundle sichtbar, siehe oben):
+
+```bash
+LSWUI_MODEL=mein-modell docker compose up --build
+```
+
+Der Container nutzt `nginxinc/nginx-unprivileged` (läuft ohne Root-Berechtigung,
+lauscht intern auf Port 8080) und hat einen eingebauten Healthcheck.
 
 ## Projektstruktur
 
 ```
 src/
   App.tsx                      # Hauptlogik (Zustandsmaschine: idle → analysing → results → fixing → fixed)
+  main.tsx                     # React-Einstiegspunkt
+  index.css                    # Tailwind-CSS-Einstiegspunkt
   lib/
-    analyse.ts                 # Aufruf der Leichte-Sprache-Analyse-API
-    llm.ts                     # Prompt + SSE-Streaming gegen OpenAI-kompatible Endpunkte
-    types.ts                   # Typen (Issue, AnalyseResponse, LlmSettings)
+    analyse.ts                 # Aufruf der Leichte-Sprache-Analyse-API (+ Verbindungs-Timeout-Helfer)
+    llm.ts                     # Prompt + SSE-Streaming, Tool-Calling-Selbstprüfung, Regeldaten
+    types.ts                   # Typen (Issue, AnalyseResult, AppSettings, …)
   components/
-    SettingsPanel.tsx          # Basis-URL / Modell / API-Schlüssel
+    SettingsPanel.tsx          # Analyse-URL / Basis-URL / Modell / API-Schlüssel
     IssueList.tsx              # Statistik + Probleme pro Regel
     AnnotatedText.tsx          # Text mit gelb markierten Problemstellen
-    DiffView.tsx               # Wort-Diff (rot/gün)
+    AnnotatedMarkers.tsx       # Rendern des annotierten Texts (format=annotated_text)
+    DiffView.tsx               # Wort-Diff (rot/grün)
 ```

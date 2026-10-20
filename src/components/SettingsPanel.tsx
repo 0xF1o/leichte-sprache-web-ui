@@ -1,18 +1,9 @@
-import { useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL } from "../lib/analyse";
 import { testToolCalling } from "../lib/llm";
 import type { AppSettings } from "../lib/types";
 
 const STORAGE_KEY = "lswui.llmsettings";
-
-function loadStored(): AppSettings | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as AppSettings) : null;
-  } catch {
-    return null;
-  }
-}
 
 interface Props {
   settings: AppSettings;
@@ -20,8 +11,9 @@ interface Props {
   disabled: boolean;
 }
 
-export function SettingsPanel({ settings, onChange, disabled }: Props) {
-  const [remember, setRemember] = useState(() => loadStored() !== null);
+export const SettingsPanel = memo(function SettingsPanel({ settings, onChange, disabled }: Props) {
+  const [remember, setRemember] = useState(() => localStorage.getItem(STORAGE_KEY) !== null);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelHint, setModelHint] = useState<string | null>(null);
   const [toolTest, setToolTest] = useState<{ running: boolean; ok: boolean | null; message: string | null }>({
@@ -29,15 +21,39 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
     ok: null,
     message: null,
   });
+  const modelsAbortRef = useRef<AbortController | null>(null);
+  const testAbortRef = useRef<AbortController | null>(null);
+
+  // Laufende Anfragen bei Abmelden des Panels abbrechen
+  useEffect(
+    () => () => {
+      modelsAbortRef.current?.abort();
+      testAbortRef.current?.abort();
+    },
+    [],
+  );
+
+  // Änderungen dauerhaft speichern, solange „merken“ aktiv ist – nicht nur im
+  // Moment des Umschaltens des Häkchens.
+  useEffect(() => {
+    if (remember) localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  }, [settings, remember]);
 
   const runToolTest = async () => {
+    const controller = new AbortController();
+    testAbortRef.current = controller;
+    // Hartes Limit für den Test, damit ein hängendes Modell den Button nicht
+    // für immer auf „Teste …“ blockiert
+    const timer = window.setTimeout(() => controller.abort(), 60000);
     setToolTest({ running: true, ok: null, message: null });
     try {
-      const result = await testToolCalling(settings);
+      const result = await testToolCalling(settings, controller.signal);
       setToolTest({ running: false, ok: result.ok, message: result.message });
     } catch (err) {
       console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
       setToolTest({ running: false, ok: false, message: `Test fehlgeschlagen: ${(err as Error).message}` });
+    } finally {
+      window.clearTimeout(timer);
     }
   };
 
@@ -53,11 +69,16 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
   };
 
   const loadModels = async () => {
+    if (modelsLoading) return;
+    const controller = new AbortController();
+    modelsAbortRef.current = controller;
     setModelHint(null);
+    setModelsLoading(true);
     try {
       const base = settings.baseUrl.trim().replace(/\/+$/, "");
       const res = await fetch(`${base}/models`, {
         headers: settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {},
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { data?: { id: string }[] };
@@ -65,8 +86,12 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
       if (ids.length === 0) throw new Error("keine Modelle gelistet");
       setModels(ids);
     } catch (err) {
-      setModels([]);
-      setModelHint(`Modelle konnten nicht geladen werden (${(err as Error).message}). Manuell eingeben.`);
+      if ((err as Error).name !== "AbortError") {
+        setModels([]);
+        setModelHint(`Modelle konnten nicht geladen werden (${(err as Error).message}). Manuell eingeben.`);
+      }
+    } finally {
+      setModelsLoading(false);
     }
   };
 
@@ -121,11 +146,11 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
           </datalist>
           <button
             type="button"
-            onClick={loadModels}
-            disabled={disabled || !settings.baseUrl}
+            onClick={() => void loadModels()}
+            disabled={disabled || modelsLoading || !settings.baseUrl}
             className="mt-1 text-xs text-blue-400 hover:underline disabled:text-slate-600"
           >
-            Modelle laden
+            {modelsLoading ? "Lade …" : "Modelle laden"}
           </button>
         </label>
         <label className="block">
@@ -224,4 +249,4 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
       </div>
     </details>
   );
-}
+});

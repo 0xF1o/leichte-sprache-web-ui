@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
+import { ruleLabel } from "../lib/llm";
 import type { Issue, ViolationStatistics } from "../lib/types";
 
 interface Props {
@@ -6,20 +7,7 @@ interface Props {
   statistics: ViolationStatistics;
 }
 
-const RULE_LABELS: Record<string, string> = {
-  regel_fremdwoerter: "Fremdwörter",
-  regel_satzlaenge: "Satzlänge",
-  regel_passiv: "Passiv",
-  regel_groesse: "Textlänge",
-  regel_konjunktiv: "Konjunktiv",
-};
-
-function ruleLabel(ruleId: string): string {
-  const base = ruleId.replace(/_issue$/, "");
-  return RULE_LABELS[base] ?? base;
-}
-
-export function IssueList({ issues, statistics }: Props) {
+export const IssueList = memo(function IssueList({ issues, statistics }: Props) {
   const grouped = useMemo(() => {
     const map = new Map<string, Issue[]>();
     for (const issue of issues) {
@@ -70,4 +58,4 @@ export function IssueList({ issues, statistics }: Props) {
       </ul>
     </div>
   );
-}
+});
