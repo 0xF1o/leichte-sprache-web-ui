@@ -15,14 +15,14 @@ export function DiffView({ original, corrected }: Props) {
       {parts.map((part, i) => {
         if (part.added) {
           return (
-            <ins key={i} className="rounded bg-green-200 px-0.5 text-green-900 no-underline">
+            <ins key={i} className="rounded bg-green-500/25 px-0.5 text-green-300 no-underline">
               {part.value}
             </ins>
           );
         }
         if (part.removed) {
           return (
-            <del key={i} className="rounded bg-red-200 px-0.5 text-red-800">
+            <del key={i} className="rounded bg-red-500/25 px-0.5 text-red-300">
               {part.value}
             </del>
           );

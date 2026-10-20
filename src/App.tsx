@@ -222,15 +222,15 @@ export default function App() {
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-8">
       <header>
         <h1 className="text-2xl font-bold">Leichte Sprache – Text prüfen und verbessern</h1>
-        <p className="mt-1 text-slate-600">
-          1. Text einfügen und analysieren lassen. 2. Gefundene Probleme ansehen. 3. Text mit der KI korrigieren lassen
-          und die Änderungen vergleichen.
+        <p className="mt-1 text-slate-400">
+          Füge einen deutschen Text ein und prüfe ihn. Die App zeigt alle Probleme, die KI schreibt den Text in Leichter
+          Sprache neu – und du siehst jede einzelne Änderung.
         </p>
       </header>
 
       <SettingsPanel settings={settings} onChange={setSettings} disabled={busy} />
 
-      <section className="rounded-xl border border-slate-200 bg-white p-4">
+      <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <label htmlFor="input" className="mb-2 block font-semibold">
           Dein Text
         </label>
@@ -241,14 +241,14 @@ export default function App() {
           disabled={busy}
           rows={8}
           placeholder="Hier den deutschen Text einfügen …"
-          className="w-full rounded-lg border border-slate-300 p-3 text-lg leading-relaxed focus:border-blue-500 focus:outline-none"
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-lg leading-relaxed text-slate-100 focus:border-blue-500 focus:outline-none"
         />
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={() => void handleAnalyse(text)}
             disabled={busy || text.trim() === ""}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700"
           >
             {stage === "analysing" ? (
               <>
@@ -262,40 +262,40 @@ export default function App() {
             <button
               type="button"
               onClick={() => abortRef.current?.abort()}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100"
+              className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
             >
               Abbrechen
             </button>
           )}
           {stage === "analysing" && <p className="text-sm text-slate-500">Die Analyse prüft den Text auf Regeln der Leichten Sprache. Das dauert nur kurz.</p>}
         </div>
-        {analysisError && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">{analysisError}</p>}
+        {analysisError && <p className="mt-3 rounded-lg bg-red-950/60 p-3 text-sm text-red-300">{analysisError}</p>}
       </section>
 
       {analysis && stage !== "analysing" && (
         <>
-          <section className="rounded-xl border border-slate-200 bg-white p-4">
+          <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h2 className="mb-3 text-lg font-semibold">Gefundene Probleme</h2>
             <IssueList issues={analysis.issues} statistics={analysis.statistics} />
           </section>
 
-          <section className="rounded-xl border border-slate-200 bg-white p-4">
+          <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h2 className="mb-2 text-lg font-semibold">Text mit Markierungen</h2>
-            <p className="mb-3 text-sm text-slate-500">
+            <p className="mb-3 text-sm text-slate-400">
               Gelb markierte Stellen haben Probleme. Zeiger darauf bewegen für Details.
             </p>
             <AnnotatedText text={analysedText} issues={analysis.issues} />
           </section>
 
           {analysis.issues.length > 0 && (
-            <section className="rounded-xl border border-slate-200 bg-white p-4">
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold">Korrektur durch die KI</h2>
                 <button
                   type="button"
                   onClick={() => void handleFix()}
                   disabled={busy || !settingsValid}
-                  className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-slate-700"
                 >
                   {stage === "fixing" ? (
                     <>
@@ -308,18 +308,18 @@ export default function App() {
               </div>
 
               {!settingsValid && (
-                <p className="mt-2 text-sm text-amber-700">
+                <p className="mt-2 text-sm text-amber-400">
                   Bitte in den Einstellungen Analyse-URL, Modell-Basis-URL und Modell ergänzen.
                 </p>
               )}
 
               {lastPrompt && (
                 <details
-                  className="mt-4 rounded-lg border border-slate-200 bg-slate-50"
+                  className="mt-4 rounded-lg border border-slate-800 bg-slate-950"
                   open={showPrompt}
                   onToggle={(e) => setShowPrompt((e.target as HTMLDetailsElement).open)}
                 >
-                  <summary className="cursor-pointer select-none p-3 text-sm font-semibold text-slate-700">
+                  <summary className="cursor-pointer select-none p-3 text-sm font-semibold text-slate-300">
                     Prompt und Konversation mit der KI anzeigen
                   </summary>
                   <div className="space-y-4 px-3 pb-3">
@@ -328,17 +328,17 @@ export default function App() {
                         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                           {msg.role === "system" ? "System-Prompt" : "Nutzer-Prompt"}
                         </p>
-                        <pre className="whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-800">
+                        <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
                           {msg.content}
                         </pre>
                       </div>
                     ))}
                     {thinkingText && (
                       <div>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">
                           Denken des Modells (Thinking)
                         </p>
-                        <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                        <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
                           {thinkingText}
                         </pre>
                       </div>
@@ -347,7 +347,7 @@ export default function App() {
                       <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Antwort des Modells {stage === "fixing" && "(läuft noch)"}
                       </p>
-                      <pre className="whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-800">
+                      <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
                         {stage === "fixing"
                           ? fixedText || "(Noch keine Antwort – siehe Live-Fenster unten)"
                           : fixedText || "(keine Antwort erhalten)"}
@@ -359,21 +359,21 @@ export default function App() {
 
               {stage === "fixing" && phaseText && (
                 <div className="mt-4 space-y-3">
-                  <p className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <p className="flex items-center gap-2 text-sm font-medium text-slate-200">
                     <Spinner /> {phaseText}
                   </p>
 
                   {thinkingText && (
                     <div>
-                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">
                         Das Modell denkt (Thinking) – das kann einige Minuten dauern
                       </p>
                       <div
                         ref={thinkingPaneRef}
-                        className="h-40 overflow-y-auto rounded-lg border border-amber-200 bg-amber-50 p-3 font-mono text-sm text-amber-900"
+                        className="h-40 overflow-y-auto rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 font-mono text-sm text-amber-200"
                       >
                         <span className="whitespace-pre-wrap">{thinkingText}</span>
-                        <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-amber-900 align-middle" />
+                        <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-amber-300 align-middle" />
                       </div>
                     </div>
                   )}
@@ -384,7 +384,7 @@ export default function App() {
                     </p>
                     <div
                       ref={livePaneRef}
-                      className="h-40 overflow-y-auto rounded-lg bg-slate-900 p-3 font-mono text-sm text-slate-100"
+                      className="h-40 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-100"
                     >
                       {fixedText ? (
                         <>
@@ -405,7 +405,7 @@ export default function App() {
 
               {stage === "results" && fixAborted && (
                 <div className="mt-4 space-y-3">
-                  <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">
                     Korrektur nach {formatSeconds(fixSeconds)} abgebrochen
                     {tokenCount > 0 && ` (${tokenCount} Tokens erhalten)`}. Der bis dahin empfangene Text ist unten.
                   </p>
@@ -414,13 +414,13 @@ export default function App() {
                       <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Teilweise Antwort des Modells
                       </p>
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-sm text-slate-800 whitespace-pre-wrap">
+                      <div className="rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-sm text-slate-200 whitespace-pre-wrap">
                         {fixedText}
                       </div>
                       <button
                         type="button"
                         onClick={() => void handleCopy()}
-                        className="mt-2 rounded-lg border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100"
+                        className="mt-2 rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
                       >
                         Teiltext kopieren
                       </button>
@@ -433,23 +433,23 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => void handleFix()}
-                    className="rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-700"
+                    className="rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-500"
                   >
                     Erneut korrigieren
                   </button>
                 </div>
               )}
 
-              {fixError && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">{fixError}</p>}
+              {fixError && <p className="mt-3 rounded-lg bg-red-950/60 p-3 text-sm text-red-300">{fixError}</p>}
 
               {stage === "fixed" && (
                 <div className="mt-4 space-y-4">
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-400">
                     Fertig nach {formatSeconds(fixSeconds)}
                     {firstTokenSeconds != null && <> (die Antwort kam erst nach {formatSeconds(firstTokenSeconds)})</>}.
                     Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
                   </p>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
                     <DiffView original={analysedText} corrected={fixedText} />
                   </div>
                   <div className="flex flex-wrap gap-3">
@@ -463,14 +463,14 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => void handleCopy()}
-                      className="rounded-lg border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100"
+                      className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
                     >
                       Korrigierten Text kopieren
                     </button>
                     <button
                       type="button"
                       onClick={() => void handleFix()}
-                      className="rounded-lg border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100"
+                      className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
                     >
                       Erneut korrigieren
                     </button>

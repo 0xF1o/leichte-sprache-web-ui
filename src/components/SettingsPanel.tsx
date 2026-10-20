@@ -55,47 +55,47 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
 
   return (
     <details
-      className="rounded-xl border border-slate-200 bg-white p-4"
+      className="rounded-xl border border-slate-800 bg-slate-900 p-4"
       open={disabled ? undefined : remember ? undefined : true}
     >
-      <summary className="cursor-pointer select-none text-sm font-semibold text-slate-700">
+      <summary className="cursor-pointer select-none text-sm font-semibold text-slate-300">
         Einstellungen (Analyse-API und KI-Modell)
       </summary>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label className="block sm:col-span-2">
-          <span className="mb-1 block text-sm text-slate-600">URL der Leichte-Sprache-Analyse</span>
+          <span className="mb-1 block text-sm text-slate-400">URL der Leichte-Sprache-Analyse</span>
           <input
             type="url"
             value={settings.analyseUrl}
             onChange={(e) => set({ analyseUrl: e.target.value })}
             disabled={disabled}
             placeholder={DEFAULT_ANALYSE_URL}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
           <span className="mt-1 block text-xs text-slate-500">
             Vollständige URL des Analyse-Endpoints (POST, JSON <code>{'{ "text": "…" }'}</code>)
           </span>
         </label>
         <label className="block sm:col-span-2">
-          <span className="mb-1 block text-sm text-slate-600">Modell: Basis-URL (OpenAI-kompatibel)</span>
+          <span className="mb-1 block text-sm text-slate-400">Modell: Basis-URL (OpenAI-kompatibel)</span>
           <input
             type="url"
             value={settings.baseUrl}
             onChange={(e) => set({ baseUrl: e.target.value })}
             disabled={disabled}
             placeholder="https://beispiel.de/v1"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
         </label>
         <label className="relative block">
-          <span className="mb-1 block text-sm text-slate-600">Modell</span>
+          <span className="mb-1 block text-sm text-slate-400">Modell</span>
           <input
             list="lswui-models"
             value={settings.model}
             onChange={(e) => set({ model: e.target.value })}
             disabled={disabled}
             placeholder="Modellname"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
           <datalist id="lswui-models">
             {models.map((m) => (
@@ -106,20 +106,20 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             type="button"
             onClick={loadModels}
             disabled={disabled || !settings.baseUrl}
-            className="mt-1 text-xs text-blue-600 hover:underline disabled:text-slate-400"
+            className="mt-1 text-xs text-blue-400 hover:underline disabled:text-slate-600"
           >
             Modelle laden
           </button>
         </label>
         <label className="block">
-          <span className="mb-1 block text-sm text-slate-600">API-Schlüssel</span>
+          <span className="mb-1 block text-sm text-slate-400">API-Schlüssel</span>
           <input
             type="password"
             value={settings.apiKey}
             onChange={(e) => set({ apiKey: e.target.value })}
             disabled={disabled}
             placeholder="wird nur im Browser gespeichert/gesendet"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
         </label>
         <label className="flex items-center gap-2 sm:col-span-2">
@@ -128,13 +128,13 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             checked={remember}
             onChange={(e) => rememberToggle(e.target.checked)}
             disabled={disabled}
-            className="h-4 w-4 rounded border-slate-300"
+            className="h-4 w-4 rounded border-slate-600"
           />
-          <span className="text-sm text-slate-600">
+          <span className="text-sm text-slate-400">
             Einstellungen in diesem Browser merken
           </span>
         </label>
-        {modelHint && <p className="text-sm text-amber-700 sm:col-span-2">{modelHint}</p>}
+        {modelHint && <p className="text-sm text-amber-400 sm:col-span-2">{modelHint}</p>}
         <p className="text-xs text-slate-500 sm:col-span-2">
           Der API-Schlüssel verlässt den Browser nur direkt zum angegebenen Modell-Endpunkt.
         </p>

@@ -57,7 +57,7 @@ export function AnnotatedText({ text, issues }: Props) {
     <p className="whitespace-pre-wrap text-lg leading-relaxed">
       {segments.map((seg, i) =>
         seg.highlighted ? (
-          <mark key={i} title={seg.titles.join("\n")} className="rounded bg-amber-200 px-0.5 text-slate-900">
+          <mark key={i} title={seg.titles.join("\n")} className="rounded bg-amber-400/30 px-0.5 text-amber-100">
             {seg.content}
           </mark>
         ) : (
