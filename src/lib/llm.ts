@@ -10,7 +10,19 @@ const SYSTEM_PROMPT = [
   "Antworte NUR mit dem korrigierten Text. Keine Erklärungen, keine Einleitung, keine Rahmen durch Anführungszeichen oder Code-Blöcke.",
 ].join("\n");
 
-function buildUserPrompt(text: string, issues: Issue[]): string {
+function buildUserPrompt(text: string, issues: Issue[], annotatedText?: string): string {
+  if (issues.length === 0 && annotatedText) {
+    // Nur annotierter Text verfügbar (format=annotated_text): Marker erklären
+    return [
+      "Text (mit Markierungen der Leichte-Sprache-Analyse):",
+      '"""',
+      annotatedText,
+      '"""',
+      "",
+      "Die Markierungen in eckigen Klammern zeigen Probleme im Text (Regel und Beschreibung).",
+      "Schreibe den Text OHNE die Markierungen in Leichter Sprache um und behebe alle markierten Probleme.",
+    ].join("\n");
+  }
   const issueLines = issues.map((issue, i) => {
     return `${i + 1}. Regel: ${issue.rule_id} – Betroffener Text: „${issue.text}“ – ${issue.message}`;
   });
@@ -189,9 +201,9 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
   return full;
 }
 
-export function buildFixMessages(text: string, issues: Issue[]): ChatMessage[] {
+export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string): ChatMessage[] {
   return [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: buildUserPrompt(text, issues) },
+    { role: "user", content: buildUserPrompt(text, issues, annotatedText) },
   ];
 }

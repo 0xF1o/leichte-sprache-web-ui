@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
 import { buildFixMessages, streamChat, type ChatMessage } from "./lib/llm";
-import type { AnalyseResponse, AppSettings } from "./lib/types";
+import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
+import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
 import { DiffView } from "./components/DiffView";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -43,7 +44,9 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
 
   const [stage, setStage] = useState<Stage>("idle");
-  const [analysis, setAnalysis] = useState<AnalyseResponse | null>(null);
+  const [analysis, setAnalysis] = useState<AnalyseResult | null>(null);
+  /** true, wenn die Analyse nur den annotierten Text liefert (format=annotated_text) */
+  const annotatedOnly = analysis != null && analysis.issues.length === 0;
   const [analysedText, setAnalysedText] = useState("");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [lastPrompt, setLastPrompt] = useState<ChatMessage[] | null>(null);
@@ -169,7 +172,11 @@ export default function App() {
     setTokenCount(0);
     setShowPrompt(false);
     try {
-      const messages = buildFixMessages(analysedText, analysis.issues);
+      const messages = buildFixMessages(
+        analysedText,
+        analysis.issues,
+        analysis.issues.length > 0 ? undefined : analysis.annotatedText,
+      );
       setLastPrompt(messages);
       await streamChat({
         settings,
@@ -275,20 +282,36 @@ export default function App() {
 
       {analysis && stage !== "analysing" && (
         <>
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <h2 className="mb-3 text-lg font-semibold">Gefundene Probleme</h2>
-            <IssueList issues={analysis.issues} statistics={analysis.statistics} />
-          </section>
+          {analysis.issues.length > 0 && analysis.statistics ? (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 text-lg font-semibold">Gefundene Probleme</h2>
+              <IssueList issues={analysis.issues} statistics={analysis.statistics} />
+            </section>
+          ) : (
+            <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-2 text-lg font-semibold">Gefundene Probleme</h2>
+              <p className="text-sm text-slate-400">
+                Diese Analyse liefert nur den annotierten Text (format=annotated_text) – daher gibt es keine
+                detaillierte Problem-Liste. Die markierten Stellen sind unten im Text.
+              </p>
+            </section>
+          )}
 
           <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h2 className="mb-2 text-lg font-semibold">Text mit Markierungen</h2>
             <p className="mb-3 text-sm text-slate-400">
-              Gelb markierte Stellen haben Probleme. Zeiger darauf bewegen für Details.
+              {annotatedOnly
+                ? "Markierte Stellen (✗) haben Probleme. Zeiger darauf bewegen für Details."
+                : "Gelb markierte Stellen haben Probleme. Zeiger darauf bewegen für Details."}
             </p>
-            <AnnotatedText text={analysedText} issues={analysis.issues} />
+            {annotatedOnly ? (
+              <AnnotatedMarkers text={analysis.annotatedText} />
+            ) : (
+              <AnnotatedText text={analysedText} issues={analysis.issues} />
+            )}
           </section>
 
-          {analysis.issues.length > 0 && (
+          {analysis.issues.length > 0 ? (
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold">Korrektur durch die KI</h2>
@@ -483,7 +506,7 @@ export default function App() {
                 </div>
               )}
             </section>
-          )}
+          ) : null}
         </>
       )}
     </div>

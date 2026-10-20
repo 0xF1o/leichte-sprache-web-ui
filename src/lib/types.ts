@@ -18,6 +18,17 @@ export interface AnalyseResponse {
   issues: Issue[];
 }
 
+/**
+ * Normalisiertes Ergebnis der Analyse – funktioniert sowohl mit
+ * format=full (annotated_text + statistics + issues) als auch mit
+ * format=annotated_text (nur annotated_text).
+ */
+export interface AnalyseResult {
+  annotatedText: string;
+  issues: Issue[];
+  statistics: ViolationStatistics | null;
+}
+
 export interface AppSettings {
   /** Vollständige URL des Analyse-Endpoints (POST, JSON {"text": …}) */
   analyseUrl: string;
