@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
-import { buildFixMessages, streamChat, type ChatMessage } from "./lib/llm";
+import { buildFixMessages, cleanModelOutput, streamChat, type ChatMessage } from "./lib/llm";
 import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
@@ -178,7 +178,7 @@ export default function App() {
         analysis.issues.length > 0 ? undefined : analysis.annotatedText,
       );
       setLastPrompt(messages);
-      await streamChat({
+      const raw = await streamChat({
         settings,
         messages,
         signal: controller.signal,
@@ -198,6 +198,7 @@ export default function App() {
           },
         },
       });
+      setFixedText(cleanModelOutput(raw));
       setStage("fixed");
     } catch (err) {
       if ((err as Error).name === "AbortError") {
