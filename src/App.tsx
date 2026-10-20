@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
-import { buildFixMessages, cleanModelOutput, streamChat, type ChatMessage } from "./lib/llm";
+import { buildFixMessages, cleanModelOutput, runFixSession, streamChat, type ChatMessage } from "./lib/llm";
 import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
@@ -10,6 +10,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
 const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
+const MAX_ROUNDS = 3;
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
@@ -27,6 +28,7 @@ function defaultSettings(): AppSettings {
     model: stored?.model || import.meta.env.LSWUI_MODEL || "",
     apiKey: stored?.apiKey || import.meta.env.LSWUI_API_KEY || "",
     reasoningEffort: stored?.reasoningEffort || "",
+    selfCheck: stored?.selfCheck ?? false,
   };
 }
 
@@ -130,7 +132,9 @@ export default function App() {
   const annotatedOnly = analysis != null && analysis.issues.length === 0;
   const [analysedText, setAnalysedText] = useState("");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [lastPrompt, setLastPrompt] = useState<ChatMessage[] | null>(null);
+  const [conversation, setConversation] = useState<ChatMessage[] | null>(null);
+  const [fixRound, setFixRound] = useState(0);
+  const [toolStatus, setToolStatus] = useState<string | null>(null);
 
   const [fixedText, setFixedText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
@@ -227,13 +231,14 @@ export default function App() {
   const fixPhase =
     stage !== "fixing"
       ? null
-      : fixedText
-        ? "Modell schreibt die Antwort …"
-        : thinkingText
-          ? "Modell denkt gerade …"
-          : fixSeconds < 3
-            ? "Anfrage wird gesendet …"
-            : "Verbunden – warte auf das erste Token des Modells …";
+      : toolStatus ??
+        (fixedText
+          ? "Modell schreibt die Antwort …"
+          : thinkingText
+            ? "Modell denkt gerade …"
+            : fixSeconds < 3
+              ? "Anfrage wird gesendet …"
+              : "Verbunden – warte auf das erste Token des Modells …");
   // Tokens pro Sekunde über ein Fenster von ~5 s (gleitet mit fixSeconds)
   const tokensPerSecond = (() => {
     if (stage !== "fixing") return null;
@@ -253,7 +258,7 @@ export default function App() {
     tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
 
   const phaseText = fixPhase
-    ? `${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
+    ? `${settings.selfCheck && fixRound > 0 ? `Runde ${fixRound}/${MAX_ROUNDS} · ` : ""}${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
       (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") +
       rateText
     : null;
@@ -282,7 +287,9 @@ export default function App() {
     setFixAborted(false);
     setFixError(null);
     setFixedText("");
-    setLastPrompt(null);
+    setConversation(null);
+    setFixRound(0);
+    setToolStatus(null);
     try {
       const result = await analyseText(settings.analyseUrl.trim(), trimmed, controller.signal);
       setAnalysis(result);
@@ -316,34 +323,57 @@ export default function App() {
     tokenSamplesRef.current = [];
     setTokenCount(0);
     setShowPrompt(false);
+    setFixRound(0);
+    setToolStatus(null);
     try {
       const messages = buildFixMessages(
         analysedText,
         analysis.issues,
         analysis.issues.length > 0 ? undefined : analysis.annotatedText,
+        settings.selfCheck,
       );
-      setLastPrompt(messages);
-      const raw = await streamChat({
-        settings,
-        messages,
-        signal: controller.signal,
-        callbacks: {
-          onToken: (chunk) => {
-            tokensRef.current += 1;
-            tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
-            setTokenCount(tokensRef.current);
-            setFirstTokenSeconds((s) => s ?? Math.floor((Date.now() - fixStartRef.current) / 1000));
-            setFixedText((prev) => prev + chunk);
-          },
-          onThinking: (chunk) => {
-            tokensRef.current += 1;
-            tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
-            setTokenCount(tokensRef.current);
-            setThinkingText((prev) => prev + chunk);
-          },
+      setConversation(messages);
+      const tokenCallbacks = {
+        onToken: (chunk: string) => {
+          tokensRef.current += 1;
+          tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
+          setTokenCount(tokensRef.current);
+          setFirstTokenSeconds((s) => s ?? Math.floor((Date.now() - fixStartRef.current) / 1000));
+          setFixedText((prev) => prev + chunk);
         },
-      });
+        onThinking: (chunk: string) => {
+          tokensRef.current += 1;
+          tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
+          setTokenCount(tokensRef.current);
+          setThinkingText((prev) => prev + chunk);
+        },
+      };
+      let raw: string;
+      if (settings.selfCheck) {
+        const session = await runFixSession({
+          settings,
+          initialMessages: messages,
+          signal: controller.signal,
+          maxRounds: MAX_ROUNDS,
+          executeTool: executeAnalyseTool,
+          callbacks: {
+            ...tokenCallbacks,
+            onRound: (round) => {
+              setFixRound(round);
+              setToolStatus(null);
+            },
+            onToolCall: (name) => setToolStatus(`Modell ruft ${name} auf (prüft seinen eigenen Text) …`),
+            onToolResult: () => setToolStatus("Prüfung fertig – Modell überarbeitet den Text …"),
+          },
+        });
+        setConversation(session.messages);
+        raw = session.text;
+      } else {
+        const result = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
+        raw = result.content;
+      }
       const cleaned = cleanModelOutput(raw);
+      if (!cleaned.trim()) throw new Error("Das Modell hat keine Antwort geliefert.");
       setFixedText(cleaned);
       setStage("fixed");
       setFlash({ text: "✅ Fertig! – Leichte Sprache", key: Date.now() });
@@ -371,6 +401,34 @@ export default function App() {
     } catch {
       /* ignore */
     }
+  };
+
+  // Tool-Executor für die Selbstprüfung: führt analyse_text im Browser aus
+  const executeAnalyseTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    if (name !== "analyse_text") return `Unbekanntes Tool: ${name}. Verfügbare Tools: analyse_text.`;
+    const text = String(args.text ?? "").trim();
+    if (!text) return "Kein Text übergeben. Bitte rufe das Tool mit dem vollständigen umgeschriebenen Text auf.";
+    const result = await analyseText(settings.analyseUrl.trim(), text);
+    if (result.statistics) {
+      const lines = result.issues.slice(0, 15).map((issue, i) => {
+        return `${i + 1}. ${issue.rule_id.replace(/_issue$/, "")}: „${issue.text}“ – ${issue.message.slice(0, 200)}`;
+      });
+      const more = result.issues.length > 15 ? `… und ${result.issues.length - 15} weitere Verstöße.` : "";
+      const verdict =
+        result.statistics.total_violations === 0
+          ? "Der Text entspricht den Regeln für Leichte Sprache."
+          : "Behebe die genannten Verstöße und prüfe erneut (falls Prüfrunden übrig sind).";
+      return [
+        `Verstöße gesamt: ${result.statistics.total_violations} (eindeutig: ${result.statistics.unique_violations}).`,
+        "Gefundene Verstöße:",
+        ...lines,
+        more,
+        verdict,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+    return `Annotierter Text (Markierungen in eckigen Klammern = Probleme):\n${result.annotatedText}`;
   };
 
   // Nachanalyse des korrigierten Textes für den Vorher/Nachher-Vergleich
@@ -500,7 +558,7 @@ export default function App() {
                 </p>
               )}
 
-              {lastPrompt && (
+              {conversation && (
                 <details
                   className="mt-4 rounded-lg border border-slate-800 bg-slate-950"
                   open={showPrompt}
@@ -513,17 +571,56 @@ export default function App() {
                     <p className="text-xs text-slate-500">
                       Anfrage-Parameter: <code className="text-slate-400">model={settings.model}</code>
                       {settings.reasoningEffort && (" " + <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>)}
+                      {settings.selfCheck && (
+                        <>
+                          {" "}
+                          <code className="text-slate-400">Selbstprüfung: an (Tool: analyse_text, max. {MAX_ROUNDS} Runden)</code>
+                        </>
+                      )}
                     </p>
-                    {lastPrompt.map((msg, i) => (
-                      <div key={i}>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          {msg.role === "system" ? "System-Prompt" : "Nutzer-Prompt"}
-                        </p>
-                        <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
-                          {msg.content}
-                        </pre>
-                      </div>
-                    ))}
+                    {conversation.map((msg, i) => {
+                      const label =
+                        msg.role === "system"
+                          ? "System-Prompt"
+                          : msg.role === "user"
+                            ? "Nutzer-Prompt"
+                            : msg.role === "assistant"
+                              ? "Antwort des Modells"
+                              : "Tool-Ergebnis (analyse_text)";
+                      return (
+                        <div key={i}>
+                          <p
+                            className={`mb-1 text-xs font-semibold uppercase tracking-wide ${msg.role === "tool" ? "text-amber-400" : "text-slate-500"}`}
+                          >
+                            {label}
+                          </p>
+                          {msg.content && (
+                            <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
+                              {msg.content}
+                            </pre>
+                          )}
+                          {msg.tool_calls?.map((tc, j) => (
+                            <div key={j} className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                              <p className="text-amber-200">
+                                → Modell ruft Tool auf: <code className="text-amber-100">{tc.function.name}</code>
+                              </p>
+                              <pre className="mt-1 whitespace-pre-wrap text-xs text-amber-200/80">
+                                {(() => {
+                                  try {
+                                    return JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
+                                  } catch {
+                                    return tc.function.arguments;
+                                  }
+                                })()}
+                              </pre>
+                            </div>
+                          ))}
+                          {msg.role === "assistant" && !msg.content && !msg.tool_calls?.length && stage === "fixing" && (
+                            <p className="text-sm text-slate-500">(läuft noch – siehe Live-Fenster unten)</p>
+                          )}
+                        </div>
+                      );
+                    })}
                     {thinkingText && (
                       <div>
                         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">

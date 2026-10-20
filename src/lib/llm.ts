@@ -74,6 +74,19 @@ const SYSTEM_PROMPT = [
   "Keine Anführungszeichen und keine Code-Blöcke um den Text.",
 ].join("\n");
 
+/** Zusätzliches System-Prompt, wenn die Selbstprüfung (Tool Calling) aktiv ist. */
+const SELF_CHECK_INSTRUCTIONS = [
+  "",
+  "SELBSTPRÜFUNG MIT TOOL:",
+  "Du hast das Tool analyse_text, das Texte auf Leichte-Sprache-Verstöße prüft.",
+  "Vorgehen:",
+  "1. Schreibe den Text in Leichter Sprache um.",
+  "2. Rufe analyse_text mit deinem GESAMTEN umgeschriebenen Text auf.",
+  "3. Wenn die Analyse noch viele Verstöße meldet: Überarbeite den Text gezielt und rufe analyse_text erneut auf (höchstens 2 Prüfrunden).",
+  "4. Die Analyse ist die objektive Wahrheit – bewerte deinen Text nicht selbst.",
+  "5. Gib als finale Antwort NUR den besten finalen Text aus. Kein Analyse-Ergebnis, keine Kommentare.",
+].join("\n");
+
 /** Deutliche Anleitung pro Regel (ersetzt die technischen Regel-IDs im Prompt). */
 const RULE_HINTS: Record<string, string> = {
   satzlaenge: "Satz ist zu lang oder zu komplex – in mehrere kurze Sätze teilen (max. 10 Wörter)",
@@ -137,8 +150,37 @@ function buildUserPrompt(text: string, issues: Issue[], annotatedText?: string):
 }
 
 export interface ChatMessage {
-  role: "system" | "user";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: {
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }[];
+  tool_call_id?: string;
+}
+
+/** Tool-Definition: die Leichte-Sprache-Analyse, die das Modell selbst aufrufen kann. */
+export const ANALYSE_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "analyse_text",
+    description:
+      "Analysiert einen deutschen Text auf Verstöße gegen Leichte Sprache. Liefert die Anzahl und die Liste der Verstöße. Nutze das Tool, um deinen umgeschriebenen Text zu prüfen, bevor du die finale Antwort gibst.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Der vollständige umgeschriebene deutsche Text" },
+      },
+      required: ["text"],
+    },
+  },
+};
+
+export interface ToolCallResult {
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 /**
@@ -155,7 +197,6 @@ export function cleanModelOutput(raw: string): string {
   // Umgebende Anführungszeichen entfernen (paarweise)
   const pairs: [string, string][] = [
     ["“", "”"],
-    ["„", "“"],
     ["„", "“"],
     ['"', '"'],
     ["‘", "’"],
@@ -195,13 +236,20 @@ interface StreamChatOptions {
   messages: ChatMessage[];
   callbacks?: StreamCallbacks;
   signal?: AbortSignal;
+  /** Optional: dem Modell verfügbare Tools anbieten (OpenAI-kompatibel) */
+  tools?: unknown[];
+}
+
+interface StreamChatResult {
+  content: string;
+  toolCalls: ToolCallResult[];
 }
 
 /**
  * Ruft einen OpenAI-kompatiblen /chat/completions-Endpunkt auf und
- * streamt die Antwort tokenweise (SSE). Gibt den vollständigen Text zurück.
+ * streamt die Antwort tokenweise (SSE). Liefert Inhalt und Tool-Calls.
  */
-export async function streamChat({ settings, messages, callbacks, signal }: StreamChatOptions): Promise<string> {
+export async function streamChat({ settings, messages, callbacks, signal, tools }: StreamChatOptions): Promise<StreamChatResult> {
   const base = settings.baseUrl.trim().replace(/\/+$/, "");
   let res: Response;
   try {
@@ -216,6 +264,7 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
         messages,
         stream: true,
         ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
+        ...(tools && tools.length > 0 ? { tools } : {}),
       }),
       signal,
     });
@@ -242,6 +291,9 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
     if (res.status === 404) {
       throw new Error(`HTTP 404 – Bitte Modell-Name und Basis-URL prüfen. (Basis-URL soll auf …/v1 enden.)`);
     }
+    if (res.status === 400 && tools && /tool/i.test(detail)) {
+      throw new Error("Das Modell unterstützt keine Tools. Bitte „Selbstprüfung“ in den Einstellungen deaktivieren.");
+    }
     throw new Error(`Modell-Endpunkt-Fehler (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
   }
 
@@ -258,6 +310,21 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
   let fullEmitted = false;
   let receivedAny = false;
   let sawSseData = false;
+  // Tool-Calls nach Index akkumulieren (Argumente kommen in Stücken)
+  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+
+  const addToolCallChunk = (chunk: {
+    index?: number;
+    id?: string;
+    function?: { name?: string; arguments?: string };
+  }) => {
+    const idx = chunk.index ?? 0;
+    const acc = toolCalls.get(idx) ?? { id: "", name: "", arguments: "" };
+    acc.id += chunk.id ?? "";
+    acc.name += chunk.function?.name ?? "";
+    acc.arguments += chunk.function?.arguments ?? "";
+    toolCalls.set(idx, acc);
+  };
 
   const handleSseLine = (line: string) => {
     if (!line.startsWith("data:")) return;
@@ -266,8 +333,18 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
     try {
       const json = JSON.parse(payload) as {
         choices?: {
-          delta?: { content?: string; reasoning_content?: string; reasoning?: string };
-          message?: { content?: string; reasoning_content?: string; reasoning?: string };
+          delta?: {
+            content?: string;
+            reasoning_content?: string;
+            reasoning?: string;
+            tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[];
+          };
+          message?: {
+            content?: string;
+            reasoning_content?: string;
+            reasoning?: string;
+            tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+          };
         }[];
       };
       const choice = json.choices?.[0];
@@ -284,6 +361,10 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
         fullEmitted = true;
         callbacks?.onToken?.(chunk);
         if (!receivedAny) callbacks?.onFirstToken?.();
+        receivedAny = true;
+      }
+      if (source.tool_calls) {
+        for (const tc of source.tool_calls) addToolCallChunk(tc);
         receivedAny = true;
       }
     } catch {
@@ -310,22 +391,34 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
   }
   if (sawSseData && buffer) handleSseLine(buffer);
 
-  if (!isSse || full === "") {
+  if (!isSse || (full === "" && toolCalls.size === 0)) {
     // Fallback: nicht gestreamte JSON-Antwort (Server puffert die gesamte Antwort)
     const raw = (buffer + decoder.decode()).trim();
     if (raw) {
       try {
         const json = JSON.parse(raw) as {
-          choices?: { message?: { content?: string; reasoning_content?: string; reasoning?: string } }[];
+          choices?: {
+            message?: {
+              content?: string;
+              reasoning_content?: string;
+              reasoning?: string;
+              tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+            };
+          }[];
         };
         const msg = json.choices?.[0]?.message;
-        const thinking = msg?.reasoning_content ?? msg?.reasoning ?? "";
-        if (thinking) callbacks?.onThinking?.(thinking);
-        const content = msg?.content ?? "";
-        if (content) {
-          full = content;
-          fullEmitted = true;
-          callbacks?.onToken?.(content);
+        if (msg) {
+          const thinking = msg.reasoning_content ?? msg.reasoning ?? "";
+          if (thinking) callbacks?.onThinking?.(thinking);
+          const content = msg.content ?? "";
+          if (content) {
+            full = content;
+            fullEmitted = true;
+            callbacks?.onToken?.(content);
+          }
+          if (msg.tool_calls) {
+            msg.tool_calls.forEach((tc, i) => addToolCallChunk({ index: i, ...tc }));
+          }
         }
       } catch {
         throw new Error("Unerwartetes Antwortformat vom Modell-Endpunkt.");
@@ -334,13 +427,114 @@ export async function streamChat({ settings, messages, callbacks, signal }: Stre
   }
 
   if (fullEmitted && !receivedAny) callbacks?.onFirstToken?.();
-  if (!full.trim()) throw new Error("Das Modell hat keine Antwort geliefert.");
-  return full;
+
+  return {
+    content: full,
+    toolCalls: [...toolCalls.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, tc]) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })),
+  };
 }
 
-export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string): ChatMessage[] {
+export interface FixSessionCallbacks extends StreamCallbacks {
+  /** Neue Modell-Runde beginnt */
+  onRound?: (round: number, maxRounds: number) => void;
+  /** Das Modell ruft ein Tool auf */
+  onToolCall?: (name: string, args: Record<string, unknown>) => void;
+  /** Ein Tool-Ergebnis liegt vor */
+  onToolResult?: (name: string, summary: string) => void;
+}
+
+export interface FixSessionResult {
+  /** Finaler Antworttext des Modells */
+  text: string;
+  /** Voller Gesprächsverlauf (inkl. Tool-Calls und -Ergebnissen) für die Anzeige */
+  messages: ChatMessage[];
+}
+
+interface FixSessionOptions {
+  settings: AppSettings;
+  initialMessages: ChatMessage[];
+  callbacks?: FixSessionCallbacks;
+  signal?: AbortSignal;
+  /** Maximale Modell-Runden (je Runde: Schreiben + optionaler Tool-Prüfaufruf) */
+  maxRounds?: number;
+  /** Führt einen Tool-Call aus und liefert das Ergebnis als Text zurück */
+  executeTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+}
+
+/**
+ * Agenten-Loop: Das Modell schreibt den Text, kann per Tool die Analyse
+ * selbst aufrufen, sieht das Ergebnis und überarbeitet – bis es eine
+ * finale Antwort gibt oder maxRounds erreicht ist.
+ */
+export async function runFixSession({
+  settings,
+  initialMessages,
+  callbacks,
+  signal,
+  maxRounds = 3,
+  executeTool,
+}: FixSessionOptions): Promise<FixSessionResult> {
+  const messages: ChatMessage[] = [...initialMessages];
+  let lastContent = "";
+
+  for (let round = 1; round <= maxRounds; round++) {
+    callbacks?.onRound?.(round, maxRounds);
+
+    const { content, toolCalls } = await streamChat({
+      settings,
+      messages,
+      signal,
+      tools: [ANALYSE_TOOL],
+      callbacks: {
+        onToken: callbacks?.onToken,
+        onThinking: callbacks?.onThinking,
+      },
+    });
+    if (content.trim()) lastContent = content;
+
+    if (toolCalls.length === 0) {
+      return { text: content, messages };
+    }
+
+    // Assistant-Mitteilung mit den Tool-Calls in den Verlauf aufnehmen
+    messages.push({
+      role: "assistant",
+      content: content || null,
+      tool_calls: toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function" as const,
+        function: { name: tc.name, arguments: tc.arguments },
+      })),
+    });
+
+    // Alle Tool-Calls ausführen und als Tool-Mitteilungen antworten
+    for (const tc of toolCalls) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
+      } catch {
+        args = { raw: tc.arguments };
+      }
+      callbacks?.onToolCall?.(tc.name, args);
+      let result: string;
+      try {
+        result = await executeTool(tc.name, args);
+      } catch (err) {
+        result = `Tool-Fehler: ${(err as Error).message}`;
+      }
+      callbacks?.onToolResult?.(tc.name, result);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+    }
+  }
+
+  return { text: lastContent, messages };
+}
+
+export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string, selfCheck = false): ChatMessage[] {
   return [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: selfCheck ? SYSTEM_PROMPT + SELF_CHECK_INSTRUCTIONS : SYSTEM_PROMPT },
     { role: "user", content: buildUserPrompt(text, issues, annotatedText) },
   ];
 }

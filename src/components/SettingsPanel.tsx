@@ -141,6 +141,22 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
         </label>
+        <label className="flex items-start gap-2 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={settings.selfCheck}
+            onChange={(e) => set({ selfCheck: e.target.checked })}
+            disabled={disabled}
+            className="mt-0.5 h-4 w-4 rounded border-slate-600"
+          />
+          <span className="text-sm text-slate-400">
+            Selbstprüfung (Tool Calling): Das Modell darf die Analyse selbst auf seinen eigenen Text anwenden und ihn
+            überarbeiten.
+            <span className="block text-xs text-slate-500">
+              Nur aktivieren, wenn das Modell Tool-Calling unterstützt. Dauert länger (mehr Runden).
+            </span>
+          </span>
+        </label>
         <label className="flex items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"
