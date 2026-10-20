@@ -10,7 +10,11 @@ import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
 const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
-const MAX_ROUNDS = 3;
+
+/** MaxRounds aus den Einstellungen auf den Bereich 1–10 begrenzen (Standard 3). */
+function clampRounds(v: number | undefined): number {
+  return Number.isFinite(v) ? Math.max(1, Math.min(10, Math.floor(v as number))) : 3;
+}
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
@@ -29,6 +33,7 @@ function defaultSettings(): AppSettings {
     apiKey: stored?.apiKey || import.meta.env.LSWUI_API_KEY || "",
     reasoningEffort: stored?.reasoningEffort || "",
     selfCheck: stored?.selfCheck ?? false,
+    maxRounds: clampRounds(stored?.maxRounds),
   };
 }
 
@@ -134,6 +139,7 @@ export default function App() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [conversation, setConversation] = useState<ChatMessage[] | null>(null);
   const [fixRound, setFixRound] = useState(0);
+  const [toolCallCount, setToolCallCount] = useState(0);
   const [toolStatus, setToolStatus] = useState<string | null>(null);
 
   const [fixedText, setFixedText] = useState("");
@@ -259,7 +265,7 @@ export default function App() {
     tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
 
   const phaseText = fixPhase
-    ? `${settings.selfCheck && fixRound > 0 ? `Runde ${fixRound}/${MAX_ROUNDS} · ` : ""}${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
+    ? `${settings.selfCheck && fixRound > 0 ? `Runde ${fixRound}/${clampRounds(settings.maxRounds)} · ` : ""}${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
       (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") +
       rateText
     : null;
@@ -291,6 +297,7 @@ export default function App() {
     setFixedText("");
     setConversation(null);
     setFixRound(0);
+    setToolCallCount(0);
     setToolStatus(null);
     try {
       const result = await analyseText(settings.analyseUrl.trim(), trimmed, controller.signal);
@@ -327,6 +334,7 @@ export default function App() {
     setTokenCount(0);
     setShowPrompt(false);
     setFixRound(0);
+    setToolCallCount(0);
     setToolStatus(null);
     try {
       const messages = buildFixMessages(
@@ -357,7 +365,7 @@ export default function App() {
           settings,
           initialMessages: messages,
           signal: controller.signal,
-          maxRounds: MAX_ROUNDS,
+          maxRounds: clampRounds(settings.maxRounds),
           executeTool: executeAnalyseTool,
           callbacks: {
             ...tokenCallbacks,
@@ -365,7 +373,10 @@ export default function App() {
               setFixRound(round);
               setToolStatus(null);
             },
-            onToolCall: (name) => setToolStatus(`Modell ruft ${name} auf (prüft seinen eigenen Text) …`),
+            onToolCall: (name) => {
+              setToolCallCount((c) => c + 1);
+              setToolStatus(`Modell ruft ${name} auf (prüft seinen eigenen Text) …`);
+            },
             onToolResult: () => setToolStatus("Prüfung fertig – Modell überarbeitet den Text …"),
           },
         });
@@ -580,11 +591,16 @@ export default function App() {
                   <div className="space-y-4 px-3 pb-3">
                     <p className="text-xs text-slate-500">
                       Anfrage-Parameter: <code className="text-slate-400">model={settings.model}</code>
-                      {settings.reasoningEffort && (" " + <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>)}
+                      {settings.reasoningEffort && (
+                        <>
+                          {" "}
+                          <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>
+                        </>
+                      )}
                       {settings.selfCheck && (
                         <>
                           {" "}
-                          <code className="text-slate-400">Selbstprüfung: an (Tool: analyse_text, max. {MAX_ROUNDS} Runden)</code>
+                          <code className="text-slate-400">Selbstprüfung: an (Tool: analyse_text, max. {clampRounds(settings.maxRounds)} Runden)</code>
                         </>
                       )}
                     </p>
@@ -753,6 +769,9 @@ export default function App() {
                     Fertig nach {formatSeconds(fixSeconds)}
                     {firstTokenSeconds != null && <> (die Antwort kam erst nach {formatSeconds(firstTokenSeconds)})</>}.
                     Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
+                  </p>
+                  <p className="text-sm text-slate-500">
+                    Runden: {Math.max(1, fixRound)} · Tool-Aufrufe: {toolCallCount} · Tokens (ca.): {tokenCount}
                   </p>
                   <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
                     <DiffView original={analysedText} corrected={fixedText} />

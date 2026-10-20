@@ -187,6 +187,22 @@ export function SettingsPanel({ settings, onChange, disabled }: Props) {
             {toolTest.message && (
               <p className={`mt-1 text-xs ${toolTest.ok ? "text-green-400" : "text-red-300"}`}>{toolTest.message}</p>
             )}
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-400">
+              Max. Runden:
+              <input
+                type="number"
+                min={1}
+                max={10}
+                step={1}
+                value={settings.maxRounds}
+                onChange={(e) =>
+                  set({ maxRounds: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })
+                }
+                disabled={disabled}
+                className="w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100"
+              />
+              <span className="text-xs text-slate-500">(1–10, Standard 3)</span>
+            </label>
           </div>
         </div>
         <label className="flex items-center gap-2 sm:col-span-2">
