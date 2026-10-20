@@ -9,6 +9,7 @@ import { DiffView } from "./components/DiffView";
 import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
+const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
@@ -39,6 +40,86 @@ function formatSeconds(total: number): string {
   return m > 0 ? `${m} Min ${s} s` : `${s} s`;
 }
 
+/** Anzahl-Unterschied nach der Korrektur (negativ = weniger Probleme). null = nicht vergleichbar. */
+function countDelta(before: AnalyseResult, after: AnalyseResult): number | null {
+  if (before.statistics && after.statistics) {
+    return after.statistics.total_violations - before.statistics.total_violations;
+  }
+  const count = (s: string) => (s.match(/\[[^\[\]]+\]/g) ?? []).length;
+  return count(after.annotatedText) - count(before.annotatedText);
+}
+
+function RecheckReport({ before, after }: { before: AnalyseResult; after: AnalyseResult }) {
+  const delta = countDelta(before, after);
+
+  if (before.statistics && after.statistics && delta != null) {
+    const b = before.statistics;
+    const a = after.statistics;
+    const rules = [...new Set([...Object.keys(b.violations_by_rule), ...Object.keys(a.violations_by_rule)])];
+    return (
+      <div className="space-y-2">
+        <p className="text-sm">
+          {delta < 0 ? (
+            <span className="font-semibold text-green-400">
+              {b.total_violations} → {a.total_violations} Verstöße ({-delta} weniger)
+            </span>
+          ) : delta === 0 ? (
+            <span className="font-semibold text-slate-300">{a.total_violations} Verstöße – Anzahl gleich geblieben</span>
+          ) : (
+            <span className="font-semibold text-red-400">
+              {b.total_violations} → {a.total_violations} Verstöße ({delta} mehr)
+            </span>
+          )}
+        </p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-slate-500">
+              <th className="py-1 font-medium">Regel</th>
+              <th className="font-medium">Vorher</th>
+              <th className="font-medium">Nachher</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map((r) => {
+              const bv = b.violations_by_rule[r] ?? 0;
+              const av = a.violations_by_rule[r] ?? 0;
+              return (
+                <tr key={r} className="border-t border-slate-800">
+                  <td className="py-1 text-slate-300">{r.replace(/_issue$/, "")}</td>
+                  <td className="text-slate-400">{bv}</td>
+                  <td className={av < bv ? "text-green-400" : av > bv ? "text-red-400" : "text-slate-300"}>{av}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {a.total_violations === 0 && <p className="text-sm font-medium text-green-400">Alle Verstöße behoben. 🎉</p>}
+      </div>
+    );
+  }
+
+  // annotated_text-Modus: Markierungen zählen
+  const count = (s: string) => (s.match(/\[[^\[\]]+\]/g) ?? []).length;
+  const b = count(before.annotatedText);
+  const a = count(after.annotatedText);
+  const d = a - b;
+  return (
+    <p className="text-sm">
+      {d < 0 ? (
+        <span className="font-semibold text-green-400">
+          Markierte Stellen: {b} → {a} ({-d} weniger)
+        </span>
+      ) : d === 0 ? (
+        <span className="font-semibold text-slate-300">Markierte Stellen: {a} – Anzahl gleich geblieben</span>
+      ) : (
+        <span className="font-semibold text-red-400">
+          Markierte Stellen: {b} → {a} ({d} mehr)
+        </span>
+      )}
+    </p>
+  );
+}
+
 export default function App() {
   const [text, setText] = useState("");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
@@ -59,6 +140,18 @@ export default function App() {
   const [firstTokenSeconds, setFirstTokenSeconds] = useState<number | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
   const [showPrompt, setShowPrompt] = useState(false);
+
+  // Automatische Nachanalyse des korrigierten Textes (Vorher/Nachher-Vergleich)
+  const [recheck, setRecheck] = useState<{
+    running: boolean;
+    result: AnalyseResult | null;
+    error: string | null;
+  } | null>(null);
+  const recheckIdRef = useRef(0);
+  const prevRecheckRunning = useRef(false);
+
+  // Tab-Titel-Blinker für „Aufmerksamkeit“ (endet nach kurzer Zeit)
+  const [flash, setFlash] = useState<{ text: string; key: number } | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const livePaneRef = useRef<HTMLDivElement | null>(null);
@@ -82,6 +175,54 @@ export default function App() {
     if (livePaneRef.current) livePaneRef.current.scrollTop = livePaneRef.current.scrollHeight;
     if (thinkingPaneRef.current) thinkingPaneRef.current.scrollTop = thinkingPaneRef.current.scrollHeight;
   }, [fixedText, thinkingText, stage]);
+
+  // Tab-Titel: zeigt an, was gerade läuft (sichtbar, wenn nur der Reiter offen ist)
+  useEffect(() => {
+    if (stage === "analysing") {
+      document.title = "⏳ Analyse läuft …";
+      return;
+    }
+    if (stage === "fixing") {
+      document.title = fixedText
+        ? "✍️ KI schreibt Antwort …"
+        : thinkingText
+          ? "💭 KI denkt …"
+          : "⏳ Warte auf KI …";
+      return;
+    }
+    document.title = BASE_TITLE;
+  }, [stage, thinkingText, fixedText]);
+
+  // Aufmerksamkeits-Blink im Tab-Titel (endet von selbst, Icon stoppt)
+  useEffect(() => {
+    if (!flash) return;
+    let i = 0;
+    const id = setInterval(() => {
+      i += 1;
+      document.title = i % 2 === 1 ? flash.text : BASE_TITLE;
+      if (i >= 10) {
+        clearInterval(id);
+        document.title = BASE_TITLE;
+      }
+    }, 900);
+    return () => {
+      clearInterval(id);
+      document.title = BASE_TITLE;
+    };
+  }, [flash]);
+
+  // Wenn die Nachanalyse fertig ist: kurzes Blinken mit Ergebnis
+  useEffect(() => {
+    const wasRunning = prevRecheckRunning.current;
+    prevRecheckRunning.current = recheck?.running ?? false;
+    if (!wasRunning || !recheck || recheck.running || !recheck.result || !analysis) return;
+    const delta = countDelta(analysis, recheck.result);
+    if (delta != null && delta < 0) {
+      setFlash({ text: "🎉 Besser! – Leichte Sprache", key: Date.now() });
+    } else {
+      setFlash({ text: "📊 Vergleich fertig – Leichte Sprache", key: Date.now() });
+    }
+  }, [recheck, analysis]);
 
   const fixPhase =
     stage !== "fixing"
@@ -134,6 +275,8 @@ export default function App() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    recheckIdRef.current += 1;
+    setRecheck(null);
     setStage("analysing");
     setAnalysisError(null);
     setFixAborted(false);
@@ -161,6 +304,8 @@ export default function App() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    recheckIdRef.current += 1;
+    setRecheck(null);
     setStage("fixing");
     setFixedText("");
     setThinkingText("");
@@ -198,8 +343,11 @@ export default function App() {
           },
         },
       });
-      setFixedText(cleanModelOutput(raw));
+      const cleaned = cleanModelOutput(raw);
+      setFixedText(cleaned);
       setStage("fixed");
+      setFlash({ text: "✅ Fertig! – Leichte Sprache", key: Date.now() });
+      void runRecheck(cleaned);
     } catch (err) {
       if ((err as Error).name === "AbortError") {
         // Abbruch: bisherigen (teilweisen) Text sichtbar lassen
@@ -222,6 +370,20 @@ export default function App() {
       await navigator.clipboard.writeText(fixedText);
     } catch {
       /* ignore */
+    }
+  };
+
+  // Nachanalyse des korrigierten Textes für den Vorher/Nachher-Vergleich
+  const runRecheck = async (target: string) => {
+    const id = ++recheckIdRef.current;
+    setRecheck({ running: true, result: null, error: null });
+    try {
+      const result = await analyseText(settings.analyseUrl.trim(), target.trim());
+      if (recheckIdRef.current === id) setRecheck({ running: false, result, error: null });
+    } catch (err) {
+      if ((err as Error).name !== "AbortError" && recheckIdRef.current === id) {
+        setRecheck({ running: false, result: null, error: (err as Error).message });
+      }
     }
   };
 
@@ -481,6 +643,22 @@ export default function App() {
                   <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
                     <DiffView original={analysedText} corrected={fixedText} />
                   </div>
+
+                  {recheck && (
+                    <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
+                      <h3 className="mb-2 font-semibold">Vorher / Nachher</h3>
+                      {recheck.running ? (
+                        <p className="flex items-center gap-2 text-sm text-slate-400">
+                          <Spinner /> Neue Analyse des korrigierten Textes läuft …
+                        </p>
+                      ) : recheck.error ? (
+                        <p className="text-sm text-red-300">Neue Analyse fehlgeschlagen: {recheck.error}</p>
+                      ) : recheck.result ? (
+                        <RecheckReport before={analysis} after={recheck.result} />
+                      ) : null}
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap gap-3">
                     <button
                       type="button"
