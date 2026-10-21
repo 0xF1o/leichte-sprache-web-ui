@@ -146,6 +146,45 @@ export const SettingsPanel = memo(function SettingsPanel({ settings, onChange, d
             Gilt nur für Reasoning-Modelle. Nicht unterstützte Parameter werden vom Server meist ignoriert.
           </span>
         </label>
+        <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-sm text-slate-400">Max. Korrektur-Runden (1–10, Standard 3)</span>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              step={1}
+              value={settings.fixRounds}
+              onChange={(e) =>
+                set({ fixRounds: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 3))) })
+              }
+              disabled={disabled}
+              className="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+            />
+            <span className="mt-1 block text-xs text-slate-500">
+              Die KI schreibt den Text in mehreren Runden um. Nach jeder Runde wird geprüft, ob noch zu viele Verstöße
+              übrig sind.
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm text-slate-400">Toleranz: erlaubte restliche Verstöße (Standard 0)</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={settings.tolerance}
+              onChange={(e) =>
+                set({ tolerance: Math.max(0, Math.min(999, Math.floor(Number(e.target.value) || 0))) })
+              }
+              disabled={disabled}
+              className="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+            />
+            <span className="mt-1 block text-xs text-slate-500">
+              Bei so vielen oder weniger Verstößen stoppt die Korrektur. 0 = erst stoppen, wenn keine Verstöße mehr da
+              sind.
+            </span>
+          </label>
+        </div>
         <label className="block">
           <span className="mb-1 block text-sm text-slate-400">API-Schlüssel</span>
           <input

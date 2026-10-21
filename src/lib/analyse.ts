@@ -1,5 +1,22 @@
 import type { AnalyseResult, Issue, ViolationStatistics } from "./types";
 
+/**
+ * Markierungen der annotierten Analyse im Text: [regel: …] bzw. [regel].
+ * Bewusst NUR dieses enge Muster – von Nutzern geschriebene eckige Klammern
+ * werden so nicht mitgezählt.
+ */
+const MARKER_RE = /\[[a-z0-9_]+(?::[^\[\]]*)?\]/gi;
+
+/**
+ * Anzahl der Verstöße eines Analyse-Ergebnisses (null = keine Analyse
+ * vorhanden). Im annotated_text-Modus werden die Markierungen gezählt.
+ */
+export function violationCount(result: AnalyseResult | null): number | null {
+  if (!result) return null;
+  if (result.statistics) return result.statistics.total_violations;
+  return (result.annotatedText.match(MARKER_RE) ?? []).length;
+}
+
 export const DEFAULT_ANALYSE_URL = "https://api.leichte-sprache.ai/analyse?format=full";
 
 /** Standard: Zeit bis zur ersten Antwort des Servers (Verbindungs-Timeout). */

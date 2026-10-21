@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
-import { buildFixMessages, cleanModelOutput, ruleLabel, streamChat, type ChatMessage } from "./lib/llm";
-import type { AnalyseResult, AppSettings } from "./lib/types";
+import { DEFAULT_ANALYSE_URL, analyseText, violationCount } from "./lib/analyse";
+import { buildFixMessages, cleanModelOutput, streamChat, type ChatMessage } from "./lib/llm";
+import type { AnalyseResult, AppSettings, FixRound } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
-import { FixedResult } from "./components/FixedResult";
+import { FixedReport } from "./components/FixedReport";
 import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
@@ -14,6 +14,12 @@ const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
 const REASONING_EFFORTS: readonly string[] = ["", "minimal", "low", "medium", "high", "xhigh"];
+
+/** Zahl auf ganzzahligen Wert im Bereich begrenzen (Standard bei ungültigem Input). */
+function clampInt(v: number | undefined, min: number, max: number, dflt: number): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : dflt;
+  return Math.max(min, Math.min(max, n));
+}
 
 /**
  * Validiert die in localStorage gespeicherten Einstellungen (unbekannter
@@ -34,6 +40,8 @@ function sanitizeStored(raw: unknown): Partial<AppSettings> {
   if (k !== undefined) out.apiKey = k;
   const r = str("reasoningEffort");
   if (r !== undefined) out.reasoningEffort = REASONING_EFFORTS.includes(r) ? (r as AppSettings["reasoningEffort"]) : "";
+  if (typeof o.fixRounds === "number") out.fixRounds = clampInt(o.fixRounds, 1, 10, 3);
+  if (typeof o.tolerance === "number") out.tolerance = clampInt(o.tolerance, 0, 999, 0);
   return out;
 }
 
@@ -53,6 +61,8 @@ function defaultSettings(): AppSettings {
     model: stored.model ?? import.meta.env.LSWUI_MODEL ?? "",
     apiKey: stored.apiKey ?? import.meta.env.LSWUI_API_KEY ?? "",
     reasoningEffort: stored.reasoningEffort ?? "",
+    fixRounds: stored.fixRounds ?? 3,
+    tolerance: stored.tolerance ?? 0,
   };
 }
 
@@ -88,93 +98,6 @@ function formatSeconds(total: number): string {
   return m > 0 ? `${m} Min ${s} s` : `${s} s`;
 }
 
-/** Anzahl-Unterschied nach der Korrektur (negativ = weniger Probleme). null = nicht vergleichbar. */
-/**
- * Markierungen der annotierten Analyse im Text: [regel: …] bzw. [regel].
- * Bewusst NUR dieses enge Muster – von Nutzern geschriebene eckige Klammern
- * werden so nicht mitgezählt.
- */
-const MARKER_RE = /\[[a-z0-9_]+(?::[^\[\]]*)?\]/gi;
-
-function countDelta(before: AnalyseResult, after: AnalyseResult): number | null {
-  if (before.statistics && after.statistics) {
-    return after.statistics.total_violations - before.statistics.total_violations;
-  }
-  const count = (s: string) => (s.match(MARKER_RE) ?? []).length;
-  return count(after.annotatedText) - count(before.annotatedText);
-}
-
-function RecheckReport({ before, after }: { before: AnalyseResult; after: AnalyseResult }) {
-  const delta = countDelta(before, after);
-
-  if (before.statistics && after.statistics && delta != null) {
-    const b = before.statistics;
-    const a = after.statistics;
-    const rules = [...new Set([...Object.keys(b.violations_by_rule), ...Object.keys(a.violations_by_rule)])];
-    return (
-      <div className="space-y-2">
-        <p className="text-sm">
-          {delta < 0 ? (
-            <span className="font-semibold text-green-400">
-              {b.total_violations} → {a.total_violations} Verstöße ({-delta} weniger)
-            </span>
-          ) : delta === 0 ? (
-            <span className="font-semibold text-slate-300">{a.total_violations} Verstöße – Anzahl gleich geblieben</span>
-          ) : (
-            <span className="font-semibold text-red-400">
-              {b.total_violations} → {a.total_violations} Verstöße ({delta} mehr)
-            </span>
-          )}
-        </p>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-slate-500">
-              <th className="py-1 font-medium">Regel</th>
-              <th className="font-medium">Vorher</th>
-              <th className="font-medium">Nachher</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rules.map((r) => {
-              const bv = b.violations_by_rule[r] ?? 0;
-              const av = a.violations_by_rule[r] ?? 0;
-              return (
-                <tr key={r} className="border-t border-slate-800">
-                  <td className="py-1 text-slate-300">{ruleLabel(r)}</td>
-                  <td className="text-slate-400">{bv}</td>
-                  <td className={av < bv ? "text-green-400" : av > bv ? "text-red-400" : "text-slate-300"}>{av}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {a.total_violations === 0 && <p className="text-sm font-medium text-green-400">Alle Verstöße behoben. 🎉</p>}
-      </div>
-    );
-  }
-
-  // annotated_text-Modus: Markierungen zählen
-  const count = (s: string) => (s.match(MARKER_RE) ?? []).length;
-  const b = count(before.annotatedText);
-  const a = count(after.annotatedText);
-  const d = a - b;
-  return (
-    <p className="text-sm">
-      {d < 0 ? (
-        <span className="font-semibold text-green-400">
-          Markierte Stellen: {b} → {a} ({-d} weniger)
-        </span>
-      ) : d === 0 ? (
-        <span className="font-semibold text-slate-300">Markierte Stellen: {a} – Anzahl gleich geblieben</span>
-      ) : (
-        <span className="font-semibold text-red-400">
-          Markierte Stellen: {b} → {a} ({d} mehr)
-        </span>
-      )}
-    </p>
-  );
-}
-
 export default function App() {
   const [text, setText] = useState("");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
@@ -200,14 +123,18 @@ export default function App() {
   const [tokenCount, setTokenCount] = useState(0);
   const [showPrompt, setShowPrompt] = useState(false);
 
-  // Automatische Nachanalyse des korrigierten Textes (Vorher/Nachher-Vergleich)
-  const [recheck, setRecheck] = useState<{
-    running: boolean;
-    result: AnalyseResult | null;
-    error: string | null;
-  } | null>(null);
-  const recheckIdRef = useRef(0);
-  const prevRecheckRunning = useRef(false);
+  // Mehr-Runden-Korrektur: alle abgeschlossenen Runden (für Bericht und
+  // Versions-Vergleich) plus Status der gerade laufenden Korrektur
+  const [fixRoundList, setFixRoundList] = useState<FixRound[]>([]);
+  /** Nummer der gerade laufenden Runde (für Statusanzeige) */
+  const [fixRound, setFixRound] = useState(0);
+  /** true, während das Ergebnis einer Runde analysiert wird */
+  const [fixChecking, setFixChecking] = useState(false);
+  /** Stop-Grund: "clean" = Toleranz erreicht, "limit" = Rundenlimit, "error" = Abbruch durch Fehler */
+  const [fixStopReason, setFixStopReason] = useState<"clean" | "limit" | "error" | null>(null);
+  const [fixWarning, setFixWarning] = useState<string | null>(null);
+  /** Angezeigte Version im Versions-Vergleich: 0 = Original, n = Runde n */
+  const [selVersion, setSelVersion] = useState(0);
 
   // Tab-Titel-Blinker für „Aufmerksamkeit“ (endet nach kurzer Zeit)
   const [flash, setFlash] = useState<{ text: string; key: number } | null>(null);
@@ -215,8 +142,6 @@ export default function App() {
   const copyNoteTimerRef = useRef<number>(0);
 
   const abortRef = useRef<AbortController | null>(null);
-  /** Abbruch-Controller der gerade laufenden Nachanalyse */
-  const recheckAbortRef = useRef<AbortController | null>(null);
   const livePaneRef = useRef<HTMLDivElement | null>(null);
   const thinkingPaneRef = useRef<HTMLDivElement | null>(null);
   const fixStartRef = useRef(0);
@@ -276,29 +201,21 @@ export default function App() {
     };
   }, [flash]);
 
-  // Wenn die Nachanalyse fertig ist: kurzes Blinken mit Ergebnis
-  useEffect(() => {
-    const wasRunning = prevRecheckRunning.current;
-    prevRecheckRunning.current = recheck?.running ?? false;
-    if (!wasRunning || !recheck || recheck.running || !recheck.result || !analysis) return;
-    const delta = countDelta(analysis, recheck.result);
-    if (delta != null && delta < 0) {
-      setFlash({ text: "🎉 Besser! – Leichte Sprache", key: Date.now() });
-    } else {
-      setFlash({ text: "📊 Vergleich fertig – Leichte Sprache", key: Date.now() });
-    }
-  }, [recheck, analysis]);
-
+  const fixMaxRounds = clampInt(settings.fixRounds, 1, 10, 3);
+  const tolerance = clampInt(settings.tolerance, 0, 999, 0);
   const fixPhase =
     stage !== "fixing"
       ? null
-      : fixedText
-        ? "Modell schreibt die Antwort …"
-        : thinkingText
-          ? "Modell denkt gerade …"
-          : fixSeconds < 3
-            ? "Anfrage wird gesendet …"
-            : "Verbunden – warte auf das erste Token des Modells …";
+      : `Runde ${Math.max(1, fixRound)}/${fixMaxRounds} · ` +
+        (fixChecking
+          ? "Ergebnis wird geprüft (Analyse) …"
+          : fixedText
+            ? "Modell schreibt die Antwort …"
+            : thinkingText
+              ? "Modell denkt gerade …"
+              : fixSeconds < 3
+                ? "Anfrage wird gesendet …"
+                : "Verbunden – warte auf das erste Token des Modells …");
   // Tokens pro Sekunde über ein Fenster von ~5 s (gleitet mit fixSeconds)
   const tokensPerSecond = (() => {
     if (stage !== "fixing") return null;
@@ -340,15 +257,16 @@ export default function App() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    recheckAbortRef.current?.abort();
-    recheckIdRef.current += 1;
-    setRecheck(null);
     setStage("analysing");
     setAnalysisError(null);
     setFixAborted(false);
+    setFixWarning(null);
     setFixError(null);
     setFixedText("");
     setConversation(null);
+    setFixRoundList([]);
+    setFixStopReason(null);
+    setSelVersion(0);
     try {
       const result = await analyseText(settings.analyseUrl.trim(), trimmed, controller.signal);
       setAnalysis(result);
@@ -365,16 +283,25 @@ export default function App() {
     }
   };
 
+  /**
+   * Mehr-Runden-Korrektur: Die KI schreibt den Text um, die App analysiert das
+   * Ergebnis. Solange mehr Verstöße als die Toleranz übrig sind und Runden
+   * bleiben, geht der Text mit den neuen Problemen zur nächsten Runde zurück.
+   */
   const handleFix = async () => {
     if (!analysis) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     fixStartRef.current = Date.now();
-    recheckAbortRef.current?.abort();
-    recheckIdRef.current += 1;
-    setRecheck(null);
+    const maxRounds = clampInt(settings.fixRounds, 1, 10, 3);
+    const tol = clampInt(settings.tolerance, 0, 999, 0);
     setStage("fixing");
+    setFixRound(0);
+    setFixChecking(false);
+    setFixRoundList([]);
+    setFixStopReason(null);
+    setFixWarning(null);
     setFixedText("");
     setThinkingText("");
     setFixAborted(false);
@@ -384,36 +311,90 @@ export default function App() {
     tokenSamplesRef.current = [];
     setTokenCount(0);
     setShowPrompt(false);
+    setSelVersion(0);
+    // Arbeitszustand des Loops (lokal, damit Abbruch/Fehler keinen veralteten
+    // React-State weiterverwenden)
+    let history: FixRound[] = [];
+    let currentText = analysedText;
+    let currentAnalysis: AnalyseResult = analysis;
+    const tokenCallbacks = {
+      onToken: (chunk: string) => {
+        tokensRef.current += 1;
+        tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
+        setTokenCount(tokensRef.current);
+        setFirstTokenSeconds((s) => s ?? Math.floor((Date.now() - fixStartRef.current) / 1000));
+        setFixedText((prev) => prev + chunk);
+      },
+      onThinking: (chunk: string) => {
+        tokensRef.current += 1;
+        tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
+        setTokenCount(tokensRef.current);
+        setThinkingText((prev) => prev + chunk);
+      },
+    };
     try {
-      const messages = buildFixMessages(analysedText, analysis.issues, analysis.statistics != null ? undefined : analysis.annotatedText);
-      setConversation(messages);
-      const tokenCallbacks = {
-        onToken: (chunk: string) => {
-          tokensRef.current += 1;
-          tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
-          setTokenCount(tokensRef.current);
-          setFirstTokenSeconds((s) => s ?? Math.floor((Date.now() - fixStartRef.current) / 1000));
-          setFixedText((prev) => prev + chunk);
-        },
-        onThinking: (chunk: string) => {
-          tokensRef.current += 1;
-          tokenSamplesRef.current.push({ t: Date.now(), n: tokensRef.current });
-          setTokenCount(tokensRef.current);
-          setThinkingText((prev) => prev + chunk);
-        },
-      };
-      const raw = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
-      const cleaned = cleanModelOutput(raw);
-      if (!cleaned.trim()) {
-        console.error("LSWUI: Modell-Antwort war nach dem Aufräumen leer. Rohe Antwort:", JSON.stringify(raw));
-        throw new Error(
-          "Das Modell hat keine verwertbare Antwort geliefert (leer oder nur Formatierung wie Anführungszeichen). Details in der Browser-Konsole (F12).",
+      for (let round = 1; round <= maxRounds; round++) {
+        setFixRound(round);
+        setFixChecking(false);
+        setFixedText("");
+        setThinkingText("");
+        // Zeit- und Token-Zähler für den Bericht dieser Runde
+        const roundStart = Date.now();
+        const tokensAtRoundStart = tokensRef.current;
+        const messages = buildFixMessages(
+          currentText,
+          currentAnalysis.issues,
+          currentAnalysis.statistics != null ? undefined : currentAnalysis.annotatedText,
         );
+        setConversation(messages);
+        const raw = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
+        const cleaned = cleanModelOutput(raw);
+        if (!cleaned.trim()) {
+          console.error("LSWUI: Modell-Antwort war nach dem Aufräumen leer. Rohe Antwort:", JSON.stringify(raw));
+          throw new Error(
+            "Das Modell hat keine verwertbare Antwort geliefert (leer oder nur Formatierung wie Anführungszeichen). Details in der Browser-Konsole (F12).",
+          );
+        }
+        setFixedText(cleaned);
+        // Ergebnis dieser Runde prüfen – so wissen wir, ob es weitergehen muss
+        setFixChecking(true);
+        let roundAnalysis: AnalyseResult | null = null;
+        let analyseFailed = false;
+        try {
+          roundAnalysis = await analyseText(settings.analyseUrl.trim(), cleaned, controller.signal);
+        } catch (err) {
+          if ((err as Error).name === "AbortError") throw err;
+          console.error("LSWUI: Analyse nach Runde", round, "fehlgeschlagen:", err);
+          analyseFailed = true;
+          setFixWarning(
+            `Die Prüfung nach Runde ${round} ist fehlgeschlagen (${(err as Error).message}). ` +
+              "Der Text wurde deshalb nicht weiter verbessert.",
+          );
+        }
+        setFixChecking(false);
+        history = [
+          ...history,
+          {
+            round,
+            text: cleaned,
+            analysis: roundAnalysis,
+            seconds: Math.round((Date.now() - roundStart) / 1000),
+            tokens: tokensRef.current - tokensAtRoundStart,
+          },
+        ];
+        setFixRoundList(history);
+        const count = violationCount(roundAnalysis);
+        if (analyseFailed || (count != null && count <= tol)) {
+          setFixStopReason(analyseFailed ? "error" : "clean");
+          break;
+        }
+        currentText = cleaned;
+        currentAnalysis = roundAnalysis as AnalyseResult;
+        if (round === maxRounds) setFixStopReason("limit");
       }
-      setFixedText(cleaned);
+      setSelVersion(history.length);
       setStage("fixed");
       setFlash({ text: "✅ Fertig! – Leichte Sprache", key: Date.now() });
-      void runRecheck(cleaned);
     } catch (err) {
       if ((err as Error).name === "AbortError") {
         // Abbruch: bisherigen (teilweisen) Text sichtbar lassen
@@ -422,8 +403,18 @@ export default function App() {
         return;
       }
       console.error("LSWUI: Korrektur fehlgeschlagen:", err);
-      setFixError((err as Error).message || String(err));
-      setStage("results");
+      const msg = (err as Error).message || String(err);
+      if (history.length > 0) {
+        // Frühere Runde steht: beste Version zeigen, statt alles zu verwerfen
+        setFixedText(history[history.length - 1].text);
+        setSelVersion(history.length);
+        setFixWarning(`Runde ${history.length + 1} ist fehlgeschlagen (${msg}). Es wird der letzte gute Entwurf angezeigt.`);
+        setFixStopReason("error");
+        setStage("fixed");
+      } else {
+        setFixError(msg);
+        setStage("results");
+      }
     }
   };
 
@@ -439,30 +430,8 @@ export default function App() {
     copyNoteTimerRef.current = window.setTimeout(() => setCopyNote(null), 3000);
   };
 
-  // Nachanalyse des korrigierten Textes für den Vorher/Nachher-Vergleich
-  const runRecheck = async (target: string) => {
-    const id = ++recheckIdRef.current;
-    const controller = new AbortController();
-    recheckAbortRef.current = controller;
-    // Die Nachanalyse ist ein Kurzlauf – hart nach 30 s abbrechen,
-    // damit ein hängender Endpunkt keinen Spinner für immer zeigt.
-    const timer = window.setTimeout(() => controller.abort(), 30000);
-    setRecheck({ running: true, result: null, error: null });
-    try {
-      const result = await analyseText(settings.analyseUrl.trim(), target.trim(), controller.signal);
-      if (recheckIdRef.current === id) setRecheck({ running: false, result, error: null });
-    } catch (err) {
-      if (recheckIdRef.current === id) {
-        if ((err as Error).name === "AbortError") {
-          setRecheck({ running: false, result: null, error: "Nachanalyse abgebrochen oder Zeitüberschreitung (30 s)." });
-        } else {
-          setRecheck({ running: false, result: null, error: (err as Error).message });
-        }
-      }
-    } finally {
-      window.clearTimeout(timer);
-    }
-  };
+  /** Angezeigte Version, begrenzt auf die vorhandene Anzahl von Runden */
+  const shownVersion = Math.min(selVersion, fixRoundList.length);
 
   const settingsValid = settings.analyseUrl.trim() !== "" && settings.baseUrl.trim() !== "" && settings.model.trim() !== "";
 
@@ -472,7 +441,7 @@ export default function App() {
         <h1 className="text-2xl font-bold">Leichte Sprache – Text prüfen und verbessern</h1>
         <p className="mt-1 text-slate-400">
           Füge einen deutschen Text ein und prüfe ihn. Die App zeigt alle Probleme, die KI schreibt den Text in Leichter
-          Sprache neu – und du siehst jede einzelne Änderung.
+          Sprache neu – in mehreren Runden, bis keine Probleme mehr übrig sind – und du siehst jede einzelne Änderung.
         </p>
       </header>
 
@@ -736,60 +705,25 @@ export default function App() {
                 </p>
               )}
 
-              {stage === "fixed" && (
-                <div className="mt-4 space-y-4">
-                  <p className="text-sm text-slate-400">
-                    Fertig nach {formatSeconds(fixSeconds)}
-                    {firstTokenSeconds != null && <> (die Antwort kam erst nach {formatSeconds(firstTokenSeconds)})</>}.
-                    Ansicht umschalten: Änderungen, Vorher oder Nachher.
-                    Im Diff-Modus: Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
-                  </p>
-                  <p className="text-sm text-slate-500">Tokens (ca.): {tokenCount}</p>
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                    <FixedResult original={analysedText} corrected={fixedText} />
-                  </div>
-
-                  {recheck && (
-                    <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                      <h3 className="mb-2 font-semibold">Vorher / Nachher</h3>
-                      {recheck.running ? (
-                        <p className="flex items-center gap-2 text-sm text-slate-400">
-                          <Spinner /> Neue Analyse des korrigierten Textes läuft …
-                        </p>
-                      ) : recheck.error ? (
-                        <p className="text-sm text-red-300">Neue Analyse fehlgeschlagen: {recheck.error}</p>
-                      ) : recheck.result ? (
-                        <RecheckReport before={analysis} after={recheck.result} />
-                      ) : null}
-                    </div>
-                  )}
-
-                  {copyNote && <p className="text-sm text-slate-300">{copyNote}</p>}
-
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={handleUseFixed}
-                      className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700"
-                    >
-                      Korrektur neu analysieren
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleCopy()}
-                      className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
-                    >
-                      Korrigierten Text kopieren
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleFix()}
-                      className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
-                    >
-                      Erneut korrigieren
-                    </button>
-                  </div>
-                </div>
+              {stage === "fixed" && analysis && (
+                <FixedReport
+                  analysis={analysis}
+                  analysedText={analysedText}
+                  fixRoundList={fixRoundList}
+                  fixStopReason={fixStopReason}
+                  fixMaxRounds={fixMaxRounds}
+                  tolerance={tolerance}
+                  fixSeconds={fixSeconds}
+                  firstTokenSeconds={firstTokenSeconds}
+                  tokenCount={tokenCount}
+                  fixWarning={fixWarning}
+                  shownVersion={shownVersion}
+                  onSelVersion={setSelVersion}
+                  copyNote={copyNote}
+                  onUseFixed={handleUseFixed}
+                  onCopy={() => void handleCopy()}
+                  onFixAgain={() => void handleFix()}
+                />
               )}
             </section>
           ) : null}
