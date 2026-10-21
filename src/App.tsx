@@ -5,7 +5,7 @@ import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
-import { DiffView } from "./components/DiffView";
+import { FixedResult } from "./components/FixedResult";
 import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
@@ -849,13 +849,14 @@ export default function App() {
                   <p className="text-sm text-slate-400">
                     Fertig nach {formatSeconds(fixSeconds)}
                     {firstTokenSeconds != null && <> (die Antwort kam erst nach {formatSeconds(firstTokenSeconds)})</>}.
-                    Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
+                    Ansicht umschalten: Änderungen, Vorher oder Nachher.
+                    Im Diff-Modus: Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
                   </p>
                   <p className="text-sm text-slate-500">
                     Runden: {Math.max(1, fixRound)} · Tool-Aufrufe: {toolCallCount} · Tokens (ca.): {tokenCount}
                   </p>
                   <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-                    <DiffView original={analysedText} corrected={fixedText} />
+                    <FixedResult original={analysedText} corrected={fixedText} />
                   </div>
 
                   {recheck && (
