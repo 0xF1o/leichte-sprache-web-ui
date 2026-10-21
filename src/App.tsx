@@ -208,19 +208,19 @@ export default function App() {
 
   const fixMaxRounds = clampInt(settings.fixRounds, 1, 10, 3);
   const tolerance = clampInt(settings.tolerance, 0, 999, 0);
+  /** Aktueller Status-Text der laufenden Runde (ohne Rundenzähler) */
   const fixPhase =
     stage !== "fixing"
       ? null
-      : `Runde ${Math.max(1, fixRound)}/${fixMaxRounds} · ` +
-        (fixChecking
-          ? "Ergebnis wird geprüft (Analyse) …"
-          : fixedText
-            ? "Modell schreibt die Antwort …"
-            : thinkingText
-              ? "Modell denkt gerade …"
-              : fixSeconds < 3
-                ? "Anfrage wird gesendet …"
-                : "Verbunden – warte auf das erste Token des Modells …");
+      : fixChecking
+        ? "Ergebnis wird geprüft (Analyse) …"
+        : fixedText
+          ? "Modell schreibt die Antwort …"
+          : thinkingText
+            ? "Modell denkt gerade …"
+            : fixSeconds < 3
+              ? "Anfrage wird gesendet …"
+              : "Verbunden – warte auf das erste Token des Modells …";
   // Tokens pro Sekunde über ein Fenster von ~5 s (gleitet mit fixSeconds)
   const tokensPerSecond = (() => {
     if (stage !== "fixing") return null;
@@ -239,11 +239,11 @@ export default function App() {
   const rateText =
     tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
 
-  const phaseText = fixPhase
-    ? `${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
-      (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") +
-      rateText
-    : null;
+  /** Laufzeit-/Token-Metadaten der laufenden Korrektur */
+  const fixMeta =
+    fixPhase != null
+      ? `Laufzeit: ${formatSeconds(fixSeconds)}` + (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") + rateText
+      : null;
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -662,19 +662,19 @@ export default function App() {
                 </details>
               )}
 
-              {stage === "fixing" && phaseText && (
+              {stage === "fixing" && fixPhase && fixMeta && (
                 <div className="mt-4 space-y-3">
-                  <p className="flex items-center gap-2 text-sm font-medium text-slate-200">
-                    <Spinner /> {phaseText}
-                  </p>
-
-                  {/* Live-Bericht: fertige Runden erscheinen, sobald ihre Prüfung da ist */}
+                  {/* Live-Bericht: fertige Runden erscheinen, sobald ihre Prüfung da ist;
+                      die laufende Runde trägt den Status (Runde x/y, Phase, Laufzeit) */}
                   {analysis && (
                     <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
                       <LiveRounds
                         analysis={analysis}
                         rounds={fixRoundList}
                         runningRound={fixRound > fixRoundList.length ? fixRound : null}
+                        maxRounds={fixMaxRounds}
+                        runningLabel={fixPhase}
+                        runningMeta={fixMeta}
                         tolerance={tolerance}
                       />
                     </div>

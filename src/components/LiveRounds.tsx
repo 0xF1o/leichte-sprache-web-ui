@@ -14,6 +14,12 @@ interface Props {
   rounds: FixRound[];
   /** Nummer der gerade laufenden Runde (null = keine) */
   runningRound: number | null;
+  /** Maximale Rundenzahl (für „Runde 4/10“) */
+  maxRounds: number;
+  /** Aktueller Status-Text der laufenden Runde, z. B. „Modell denkt gerade …“ */
+  runningLabel: string;
+  /** Meta-Infos der laufenden Runde, z. B. „Laufzeit: 12 s · 340 Tokens“ */
+  runningMeta: string | null;
   tolerance: number;
 }
 
@@ -22,7 +28,7 @@ interface Props {
  * Status (✓/✗), Verstößen, Veränderung und Meta-Infos. Läuft deutlich
  * schlanker als die volle Berichtstabelle.
  */
-export function LiveRounds({ analysis, rounds, runningRound, tolerance }: Props) {
+export function LiveRounds({ analysis, rounds, runningRound, maxRounds, runningLabel, runningMeta, tolerance }: Props) {
   const originalCount = violationCount(analysis);
   // „Veränderung" bezieht sich immer auf den zuletzt ÜBERNOHMENEN Stand
   let baseline = originalCount;
@@ -79,7 +85,12 @@ export function LiveRounds({ analysis, rounds, runningRound, tolerance }: Props)
             className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-slate-400 border-t-transparent"
             aria-hidden
           />
-          <p className="text-sm text-slate-400">Runde {runningRound} läuft …</p>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm text-slate-200">
+              Runde {runningRound}/{maxRounds} · {runningLabel}
+            </p>
+            {runningMeta && <p className="truncate text-xs text-slate-500">{runningMeta}</p>}
+          </div>
         </li>
       )}
     </ul>
