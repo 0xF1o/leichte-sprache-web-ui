@@ -41,19 +41,6 @@ const SYSTEM_PROMPT = [
   "AUSGABE (ergänzend): Keine Anführungszeichen und keine Code-Blöcke um den Text.",
 ].join("\n");
 
-/** Zusätzliches System-Prompt, wenn die Selbstprüfung (Tool Calling) aktiv ist. */
-const SELF_CHECK_INSTRUCTIONS = [
-  "",
-  "SELBSTPRÜFUNG MIT TOOL:",
-  "Du hast das Tool analyse_text, das Texte auf Leichte-Sprache-Verstöße prüft.",
-  "Vorgehen:",
-  "1. Schreibe den Text in Leichter Sprache um.",
-  "2. Rufe analyse_text mit deinem GESAMTEN umgeschriebenen Text auf.",
-  "3. Wenn die Analyse noch viele Verstöße meldet: Überarbeite den Text gezielt und rufe analyse_text erneut auf (höchstens 2 Prüfrunden).",
-  "4. Die Analyse ist die objektive Wahrheit – bewerte deinen Text nicht selbst.",
-  "5. Gib als finale Antwort NUR den besten finalen Text aus. Kein Analyse-Ergebnis, keine Kommentare.",
-].join("\n");
-
 /** Menschenlesbare Anzeige-Namen der Regeln (gemeinsam mit IssueList verwendet). */
 export const RULE_LABELS: Record<string, string> = {
   satzlaenge: "Satzlänge",
@@ -141,37 +128,8 @@ function buildUserPrompt(text: string, issues: Issue[], annotatedText?: string):
 }
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
+  role: "system" | "user" | "assistant";
   content: string | null;
-  tool_calls?: {
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }[];
-  tool_call_id?: string;
-}
-
-/** Tool-Definition: die Leichte-Sprache-Analyse, die das Modell selbst aufrufen kann. */
-export const ANALYSE_TOOL = {
-  type: "function" as const,
-  function: {
-    name: "analyse_text",
-    description:
-      "Analysiert einen deutschen Text auf Verstöße gegen Leichte Sprache. Liefert die Anzahl und die Liste der Verstöße. Nutze das Tool, um deinen umgeschriebenen Text zu prüfen, bevor du die finale Antwort gibst.",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Der vollständige umgeschriebene deutsche Text" },
-      },
-      required: ["text"],
-    },
-  },
-};
-
-export interface ToolCallResult {
-  id: string;
-  name: string;
-  arguments: string;
 }
 
 /**
@@ -229,20 +187,13 @@ interface StreamChatOptions {
   messages: ChatMessage[];
   callbacks?: StreamCallbacks;
   signal?: AbortSignal;
-  /** Optional: dem Modell verfügbare Tools anbieten (OpenAI-kompatibel) */
-  tools?: unknown[];
-}
-
-interface StreamChatResult {
-  content: string;
-  toolCalls: ToolCallResult[];
 }
 
 /**
  * Ruft einen OpenAI-kompatiblen /chat/completions-Endpunkt auf und
- * streamt die Antwort tokenweise (SSE). Liefert Inhalt und Tool-Calls.
+ * streamt die Antwort tokenweise (SSE). Liefert den Antworttext.
  */
-export async function streamChat({ settings, messages, callbacks, signal, tools }: StreamChatOptions): Promise<StreamChatResult> {
+export async function streamChat({ settings, messages, callbacks, signal }: StreamChatOptions): Promise<string> {
   const base = settings.baseUrl.trim().replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
   // Verbindungs-Timeout: bis die Antwort beginnt. Danach darf das Streamen
@@ -261,7 +212,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
         messages,
         stream: true,
         ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
-        ...(tools && tools.length > 0 ? { tools } : {}),
       }),
       signal: guard.signal,
     });
@@ -298,9 +248,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
     if (res.status === 404) {
       throw new Error(`HTTP 404 – Bitte Modell-Name und Basis-URL prüfen. (Basis-URL soll auf …/v1 enden.)`);
     }
-    if (res.status === 400 && tools && /tool/i.test(detail)) {
-      throw new Error("Das Modell unterstützt keine Tools. Bitte „Selbstprüfung“ in den Einstellungen deaktivieren.");
-    }
     throw new Error(`Modell-Endpunkt-Fehler (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
   }
 
@@ -321,21 +268,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
   let dataLines = 0;
   let thinkingChars = 0;
   let finishReason: string | null = null;
-  // Tool-Calls nach Index akkumulieren (Argumente kommen in Stücken)
-  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
-
-  const addToolCallChunk = (chunk: {
-    index?: number;
-    id?: string;
-    function?: { name?: string; arguments?: string };
-  }) => {
-    const idx = chunk.index ?? 0;
-    const acc = toolCalls.get(idx) ?? { id: "", name: "", arguments: "" };
-    acc.id += chunk.id ?? "";
-    acc.name += chunk.function?.name ?? "";
-    acc.arguments += chunk.function?.arguments ?? "";
-    toolCalls.set(idx, acc);
-  };
 
   const handleSseLine = (line: string) => {
     if (!line.startsWith("data:")) return;
@@ -350,13 +282,11 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
             content?: string;
             reasoning_content?: string;
             reasoning?: string;
-            tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[];
           };
           message?: {
             content?: string;
             reasoning_content?: string;
             reasoning?: string;
-            tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
           };
         }[];
       };
@@ -376,10 +306,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
         fullEmitted = true;
         callbacks?.onToken?.(chunk);
         if (!receivedAny) callbacks?.onFirstToken?.();
-        receivedAny = true;
-      }
-      if (source.tool_calls) {
-        for (const tc of source.tool_calls) addToolCallChunk(tc);
         receivedAny = true;
       }
     } catch {
@@ -417,7 +343,7 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
   }
   if (sawSseData && buffer) handleSseLine(buffer);
 
-  if (!isSse || (full === "" && toolCalls.size === 0)) {
+  if (!isSse || full === "") {
     // Fallback: nicht gestreamte JSON-Antwort (Server puffert die gesamte Antwort)
     const raw = (buffer + decoder.decode()).trim();
     if (raw) {
@@ -428,7 +354,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
               content?: string;
               reasoning_content?: string;
               reasoning?: string;
-              tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
             };
           }[];
         };
@@ -442,9 +367,6 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
             fullEmitted = true;
             callbacks?.onToken?.(content);
           }
-          if (msg.tool_calls) {
-            msg.tool_calls.forEach((tc, i) => addToolCallChunk({ index: i, ...tc }));
-          }
         }
       } catch {
         throw new Error("Unerwartetes Antwortformat vom Modell-Endpunkt.");
@@ -454,7 +376,7 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
 
   if (fullEmitted && !receivedAny) callbacks?.onFirstToken?.();
 
-  if (!full.trim() && toolCalls.size === 0) {
+  if (!full.trim()) {
     // Antwort ohne Inhalt und ohne Tool-Calls: aussagekräftig melden
     const details = [
       `Empfangen: ${dataLines} Datenzeilen`,
@@ -472,203 +394,12 @@ export async function streamChat({ settings, messages, callbacks, signal, tools 
     );
   }
 
-  return {
-    content: full,
-    toolCalls: [...toolCalls.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([i, tc]) => ({
-        // Manche Server liefern keine ID – dann eine erzeugen, damit der
-        // Gesprächsverlauf (tool_call_id) gültig bleibt.
-        id: tc.id || `auto_call_${i}_${Date.now().toString(36)}`,
-        name: tc.name,
-        arguments: tc.arguments,
-      })),
-  };
+  return full;
 }
 
-export interface FixSessionCallbacks extends StreamCallbacks {
-  /** Neue Modell-Runde beginnt */
-  onRound?: (round: number, maxRounds: number) => void;
-  /** Das Modell ruft ein Tool auf */
-  onToolCall?: (name: string, args: Record<string, unknown>) => void;
-  /** Ein Tool-Ergebnis liegt vor */
-  onToolResult?: (name: string, summary: string) => void;
-}
-
-export interface FixSessionResult {
-  /** Finaler Antworttext des Modells */
-  text: string;
-  /** Voller Gesprächsverlauf (inkl. Tool-Calls und -Ergebnissen) für die Anzeige */
-  messages: ChatMessage[];
-  /** Warnung, wenn eine Runde fehlgeschlagen ist, aber ein brauchbarer Entwurf existiert */
-  warning?: string;
-}
-
-interface FixSessionOptions {
-  settings: AppSettings;
-  initialMessages: ChatMessage[];
-  callbacks?: FixSessionCallbacks;
-  signal?: AbortSignal;
-  /** Maximale Modell-Runden (je Runde: Schreiben + optionaler Tool-Prüfaufruf) */
-  maxRounds?: number;
-  /** Führt einen Tool-Call aus und liefert das Ergebnis als Text zurück */
-  executeTool: (name: string, args: Record<string, unknown>) => Promise<string>;
-}
-
-/**
- * Agenten-Loop: Das Modell schreibt den Text, kann per Tool die Analyse
- * selbst aufrufen, sieht das Ergebnis und überarbeitet – bis es eine
- * finale Antwort gibt oder maxRounds erreicht ist.
- */
-export async function runFixSession({
-  settings,
-  initialMessages,
-  callbacks,
-  signal,
-  maxRounds = 3,
-  executeTool,
-}: FixSessionOptions): Promise<FixSessionResult> {
-  const messages: ChatMessage[] = [...initialMessages];
-  let lastContent = "";
-
-  for (let round = 1; round <= maxRounds; round++) {
-    callbacks?.onRound?.(round, maxRounds);
-
-    let content: string;
-    let toolCalls: ToolCallResult[];
-    try {
-      const result = await streamChat({
-        settings,
-        messages,
-        signal,
-        tools: [ANALYSE_TOOL],
-        callbacks: {
-          onToken: callbacks?.onToken,
-          onThinking: callbacks?.onThinking,
-        },
-      });
-      content = result.content;
-      toolCalls = result.toolCalls;
-    } catch (err) {
-      if ((err as Error).name === "AbortError") throw err;
-      const msg = (err as Error).message;
-      // Bei späteren Runden mit vorhandenem Entwurf: den besten Entwurf liefern
-      if (lastContent.trim()) {
-        return {
-          text: lastContent,
-          messages,
-          warning: `Runde ${round}/${maxRounds} fehlgeschlagen (${msg}). Es wird der bisher beste Entwurf verwendet.`,
-        };
-      }
-      throw new Error(`Runde ${round}/${maxRounds}: ${msg}`);
-    }
-    if (content.trim()) lastContent = content;
-
-    if (toolCalls.length === 0) {
-      return { text: content, messages };
-    }
-
-    // Assistant-Mitteilung mit den Tool-Calls in den Verlauf aufnehmen
-    messages.push({
-      role: "assistant",
-      content: content || null,
-      tool_calls: toolCalls.map((tc) => ({
-        id: tc.id,
-        type: "function" as const,
-        function: { name: tc.name, arguments: tc.arguments },
-      })),
-    });
-
-    // Alle Tool-Calls ausführen und als Tool-Mitteilungen antworten
-    for (const tc of toolCalls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-      } catch {
-        args = { raw: tc.arguments };
-      }
-      callbacks?.onToolCall?.(tc.name, args);
-      let result: string;
-      try {
-        result = await executeTool(tc.name, args);
-      } catch (err) {
-        // Nutzer-Abbruch durchreichen, damit die ganze Sitzung stoppt
-        if ((err as Error).name === "AbortError") throw err;
-        result = `Tool-Fehler: ${(err as Error).message}`;
-      }
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      callbacks?.onToolResult?.(tc.name, result);
-      messages.push({ role: "tool", tool_call_id: tc.id, content: result });
-    }
-  }
-
-  // Maximale Rundenzahl erreicht: Das Modell hat (noch) keine finale Antwort gegeben.
-  if (!lastContent.trim()) {
-    throw new Error(`Maximale Rundenzahl (${maxRounds}) erreicht – das Modell hat aber keinen Text geliefert.`);
-  }
-  return {
-    text: lastContent,
-    messages,
-    warning: `Maximale Rundenzahl (${maxRounds}) erreicht – die letzte Version wurde nicht mehr durch die Analyse geprüft.`,
-  };
-}
-
-export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string, selfCheck = false): ChatMessage[] {
+export function buildFixMessages(text: string, issues: Issue[], annotatedText?: string): ChatMessage[] {
   return [
-    { role: "system", content: selfCheck ? SYSTEM_PROMPT + SELF_CHECK_INSTRUCTIONS : SYSTEM_PROMPT },
+    { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: buildUserPrompt(text, issues, annotatedText) },
   ];
-}
-
-export interface ToolTestResult {
-  ok: boolean;
-  message: string;
-  ms: number;
-}
-
-/**
- * Kleiner Live-Test, ob das eingestellte Modell Tool-Calling unterstützt:
- * Das Modell soll auf eine Testanfrage zwingend das Tool analyse_text aufrufen.
- * Läuft mit minimalem Reasoning, damit der Test schnell bleibt.
- */
-export async function testToolCalling(settings: AppSettings, signal?: AbortSignal): Promise<ToolTestResult> {
-  const t0 = Date.now();
-  try {
-    const res = await streamChat({
-      settings: { ...settings, reasoningEffort: "minimal" },
-      signal,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Du bist ein Test-Assistent. Wenn der Nutzer einen Text prüfen lässt, rufe zwingend das Tool analyse_text mit genau diesem Text auf.",
-        },
-        { role: "user", content: "Prüfe diesen Text: Hallo Welt." },
-      ],
-      tools: [ANALYSE_TOOL],
-    });
-    const ms = Date.now() - t0;
-    if (res.toolCalls.length > 0) {
-      const name = res.toolCalls[0].name;
-      return {
-        ok: name === "analyse_text",
-        message:
-          name === "analyse_text"
-            ? `Tool-Calling funktioniert: Tool „analyse_text“ wurde in ${(ms / 1000).toFixed(1)} s aufgerufen.`
-            : `Das Modell hat ein anderes Tool aufgerufen: „${name}“.`,
-        ms,
-      };
-    }
-    return {
-      ok: false,
-      message: `Das Modell hat kein Tool aufgerufen, sondern direkt geantwortet${
-        res.content ? `: „${res.content.trim().slice(0, 100)}“` : ""
-      }. Tool-Calling wird vermutlich nicht unterstützt.`,
-      ms,
-    };
-  } catch (err) {
-    console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
-    const label = (err as Error).name === "AbortError" ? "Test abgebrochen." : `Test fehlgeschlagen: ${(err as Error).message}`;
-    return { ok: false, message: label, ms: Date.now() - t0 };
-  }
 }

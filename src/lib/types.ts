@@ -38,8 +38,4 @@ export interface AppSettings {
   apiKey: string;
   /** Reasoning-Aufwand: "" = nicht setzen (Modell-Standard), sonst minimal/low/medium/high/xhigh */
   reasoningEffort: "" | "minimal" | "low" | "medium" | "high" | "xhigh";
-  /** Selbstprüfung: Modell darf die Analyse per Tool-Calling selbst aufrufen */
-  selfCheck: boolean;
-  /** Maximale Modell-Runden bei der Selbstprüfung (1–10) */
-  maxRounds: number;
 }

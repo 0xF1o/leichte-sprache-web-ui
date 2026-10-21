@@ -90,7 +90,7 @@ src/
   index.css                    # Tailwind-CSS-Einstiegspunkt
   lib/
     analyse.ts                 # Aufruf der Leichte-Sprache-Analyse-API (+ Verbindungs-Timeout-Helfer)
-    llm.ts                     # Prompt + SSE-Streaming, Tool-Calling-Selbstprüfung, Regeldaten
+    llm.ts                     # Prompt + SSE-Streaming, Regeldaten
     types.ts                   # Typen (Issue, AnalyseResult, AppSettings, …)
   components/
     SettingsPanel.tsx          # Analyse-URL / Basis-URL / Modell / API-Schlüssel

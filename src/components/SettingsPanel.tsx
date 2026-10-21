@@ -1,6 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL } from "../lib/analyse";
-import { testToolCalling } from "../lib/llm";
 import type { AppSettings } from "../lib/types";
 
 const STORAGE_KEY = "lswui.llmsettings";
@@ -16,19 +15,12 @@ export const SettingsPanel = memo(function SettingsPanel({ settings, onChange, d
   const [modelsLoading, setModelsLoading] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelHint, setModelHint] = useState<string | null>(null);
-  const [toolTest, setToolTest] = useState<{ running: boolean; ok: boolean | null; message: string | null }>({
-    running: false,
-    ok: null,
-    message: null,
-  });
   const modelsAbortRef = useRef<AbortController | null>(null);
-  const testAbortRef = useRef<AbortController | null>(null);
 
   // Laufende Anfragen bei Abmelden des Panels abbrechen
   useEffect(
     () => () => {
       modelsAbortRef.current?.abort();
-      testAbortRef.current?.abort();
     },
     [],
   );
@@ -38,24 +30,6 @@ export const SettingsPanel = memo(function SettingsPanel({ settings, onChange, d
   useEffect(() => {
     if (remember) localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }, [settings, remember]);
-
-  const runToolTest = async () => {
-    const controller = new AbortController();
-    testAbortRef.current = controller;
-    // Hartes Limit für den Test, damit ein hängendes Modell den Button nicht
-    // für immer auf „Teste …“ blockiert
-    const timer = window.setTimeout(() => controller.abort(), 60000);
-    setToolTest({ running: true, ok: null, message: null });
-    try {
-      const result = await testToolCalling(settings, controller.signal);
-      setToolTest({ running: false, ok: result.ok, message: result.message });
-    } catch (err) {
-      console.error("LSWUI: Tool-Calling-Test fehlgeschlagen:", err);
-      setToolTest({ running: false, ok: false, message: `Test fehlgeschlagen: ${(err as Error).message}` });
-    } finally {
-      window.clearTimeout(timer);
-    }
-  };
 
   const set = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
 
@@ -183,53 +157,6 @@ export const SettingsPanel = memo(function SettingsPanel({ settings, onChange, d
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
           />
         </label>
-        <div className="sm:col-span-2">
-          <label className="flex items-start gap-2">
-            <input
-              type="checkbox"
-              checked={settings.selfCheck}
-              onChange={(e) => set({ selfCheck: e.target.checked })}
-              disabled={disabled}
-              className="mt-0.5 h-4 w-4 rounded border-slate-600"
-            />
-            <span className="text-sm text-slate-400">
-              Selbstprüfung (Tool Calling): Das Modell darf die Analyse selbst auf seinen eigenen Text anwenden und ihn
-              überarbeiten.
-              <span className="block text-xs text-slate-500">
-                Nur aktivieren, wenn das Modell Tool-Calling unterstützt. Dauert länger (mehr Runden).
-              </span>
-            </span>
-          </label>
-          <div className="mt-1 pl-6">
-            <button
-              type="button"
-              onClick={() => void runToolTest()}
-              disabled={disabled || toolTest.running || !settings.baseUrl.trim() || !settings.model.trim()}
-              className="text-xs text-blue-400 hover:underline disabled:text-slate-600"
-            >
-              {toolTest.running ? "Teste Tool-Calling …" : "Tool-Calling mit diesem Modell testen"}
-            </button>
-            {toolTest.message && (
-              <p className={`mt-1 text-xs ${toolTest.ok ? "text-green-400" : "text-red-300"}`}>{toolTest.message}</p>
-            )}
-            <label className="mt-2 flex items-center gap-2 text-sm text-slate-400">
-              Max. Runden:
-              <input
-                type="number"
-                min={1}
-                max={10}
-                step={1}
-                value={settings.maxRounds}
-                onChange={(e) =>
-                  set({ maxRounds: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })
-                }
-                disabled={disabled}
-                className="w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100"
-              />
-              <span className="text-xs text-slate-500">(1–10, Standard 3)</span>
-            </label>
-          </div>
-        </div>
         <label className="flex items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"

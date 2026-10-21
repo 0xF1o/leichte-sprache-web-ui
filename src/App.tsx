@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText } from "./lib/analyse";
-import { buildFixMessages, cleanModelOutput, ruleLabel, runFixSession, streamChat, type ChatMessage } from "./lib/llm";
+import { buildFixMessages, cleanModelOutput, ruleLabel, streamChat, type ChatMessage } from "./lib/llm";
 import type { AnalyseResult, AppSettings } from "./lib/types";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
@@ -10,11 +10,6 @@ import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
 const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
-
-/** MaxRounds aus den Einstellungen auf den Bereich 1–10 begrenzen (Standard 3). */
-function clampRounds(v: number | undefined): number {
-  return Number.isFinite(v) ? Math.max(1, Math.min(10, Math.floor(v as number))) : 3;
-}
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
 
@@ -39,8 +34,6 @@ function sanitizeStored(raw: unknown): Partial<AppSettings> {
   if (k !== undefined) out.apiKey = k;
   const r = str("reasoningEffort");
   if (r !== undefined) out.reasoningEffort = REASONING_EFFORTS.includes(r) ? (r as AppSettings["reasoningEffort"]) : "";
-  if (typeof o.selfCheck === "boolean") out.selfCheck = o.selfCheck;
-  if (typeof o.maxRounds === "number") out.maxRounds = clampRounds(o.maxRounds);
   return out;
 }
 
@@ -60,8 +53,6 @@ function defaultSettings(): AppSettings {
     model: stored.model ?? import.meta.env.LSWUI_MODEL ?? "",
     apiKey: stored.apiKey ?? import.meta.env.LSWUI_API_KEY ?? "",
     reasoningEffort: stored.reasoningEffort ?? "",
-    selfCheck: stored.selfCheck ?? false,
-    maxRounds: clampRounds(stored.maxRounds),
   };
 }
 
@@ -199,14 +190,10 @@ export default function App() {
   const [analysedText, setAnalysedText] = useState("");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [conversation, setConversation] = useState<ChatMessage[] | null>(null);
-  const [fixRound, setFixRound] = useState(0);
-  const [toolCallCount, setToolCallCount] = useState(0);
-  const [toolStatus, setToolStatus] = useState<string | null>(null);
 
   const [fixedText, setFixedText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [fixAborted, setFixAborted] = useState(false);
-  const [fixWarning, setFixWarning] = useState<string | null>(null);
   const [fixError, setFixError] = useState<string | null>(null);
   const [fixSeconds, setFixSeconds] = useState(0);
   const [firstTokenSeconds, setFirstTokenSeconds] = useState<number | null>(null);
@@ -305,14 +292,13 @@ export default function App() {
   const fixPhase =
     stage !== "fixing"
       ? null
-      : toolStatus ??
-        (fixedText
-          ? "Modell schreibt die Antwort …"
-          : thinkingText
-            ? "Modell denkt gerade …"
-            : fixSeconds < 3
-              ? "Anfrage wird gesendet …"
-              : "Verbunden – warte auf das erste Token des Modells …");
+      : fixedText
+        ? "Modell schreibt die Antwort …"
+        : thinkingText
+          ? "Modell denkt gerade …"
+          : fixSeconds < 3
+            ? "Anfrage wird gesendet …"
+            : "Verbunden – warte auf das erste Token des Modells …";
   // Tokens pro Sekunde über ein Fenster von ~5 s (gleitet mit fixSeconds)
   const tokensPerSecond = (() => {
     if (stage !== "fixing") return null;
@@ -332,7 +318,7 @@ export default function App() {
     tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
 
   const phaseText = fixPhase
-    ? `${settings.selfCheck && fixRound > 0 ? `Runde ${fixRound}/${clampRounds(settings.maxRounds)} · ` : ""}${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
+    ? `${fixPhase} Laufzeit: ${formatSeconds(fixSeconds)}` +
       (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") +
       rateText
     : null;
@@ -360,13 +346,9 @@ export default function App() {
     setStage("analysing");
     setAnalysisError(null);
     setFixAborted(false);
-    setFixWarning(null);
     setFixError(null);
     setFixedText("");
     setConversation(null);
-    setFixRound(0);
-    setToolCallCount(0);
-    setToolStatus(null);
     try {
       const result = await analyseText(settings.analyseUrl.trim(), trimmed, controller.signal);
       setAnalysis(result);
@@ -396,23 +378,14 @@ export default function App() {
     setFixedText("");
     setThinkingText("");
     setFixAborted(false);
-    setFixWarning(null);
     setFixError(null);
     setFirstTokenSeconds(null);
     tokensRef.current = 0;
     tokenSamplesRef.current = [];
     setTokenCount(0);
     setShowPrompt(false);
-    setFixRound(0);
-    setToolCallCount(0);
-    setToolStatus(null);
     try {
-      const messages = buildFixMessages(
-        analysedText,
-        analysis.issues,
-        analysis.statistics != null ? undefined : analysis.annotatedText,
-        settings.selfCheck,
-      );
+      const messages = buildFixMessages(analysedText, analysis.issues, analysis.statistics != null ? undefined : analysis.annotatedText);
       setConversation(messages);
       const tokenCallbacks = {
         onToken: (chunk: string) => {
@@ -429,34 +402,7 @@ export default function App() {
           setThinkingText((prev) => prev + chunk);
         },
       };
-      let raw: string;
-      if (settings.selfCheck) {
-        const session = await runFixSession({
-          settings,
-          initialMessages: messages,
-          signal: controller.signal,
-          maxRounds: clampRounds(settings.maxRounds),
-          executeTool: executeAnalyseTool,
-          callbacks: {
-            ...tokenCallbacks,
-            onRound: (round) => {
-              setFixRound(round);
-              setToolStatus(null);
-            },
-            onToolCall: (name) => {
-              setToolCallCount((c) => c + 1);
-              setToolStatus(`Modell ruft ${name} auf (prüft seinen eigenen Text) …`);
-            },
-            onToolResult: () => setToolStatus("Prüfung fertig – Modell überarbeitet den Text …"),
-          },
-        });
-        setConversation(session.messages);
-        raw = session.text;
-        if (session.warning) setFixWarning(session.warning);
-      } else {
-        const result = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
-        raw = result.content;
-      }
+      const raw = await streamChat({ settings, messages, signal: controller.signal, callbacks: tokenCallbacks });
       const cleaned = cleanModelOutput(raw);
       if (!cleaned.trim()) {
         console.error("LSWUI: Modell-Antwort war nach dem Aufräumen leer. Rohe Antwort:", JSON.stringify(raw));
@@ -491,34 +437,6 @@ export default function App() {
     setCopyNote(ok ? "In die Zwischenablage kopiert." : "Kopieren fehlgeschlagen – bitte Text manuell auswählen und kopieren.");
     window.clearTimeout(copyNoteTimerRef.current);
     copyNoteTimerRef.current = window.setTimeout(() => setCopyNote(null), 3000);
-  };
-
-  // Tool-Executor für die Selbstprüfung: führt analyse_text im Browser aus
-  const executeAnalyseTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
-    if (name !== "analyse_text") return `Unbekanntes Tool: ${name}. Verfügbare Tools: analyse_text.`;
-    const text = String(args.text ?? "").trim();
-    if (!text) return "Kein Text übergeben. Bitte rufe das Tool mit dem vollständigen umgeschriebenen Text auf.";
-    const result = await analyseText(settings.analyseUrl.trim(), text, abortRef.current?.signal);
-    if (result.statistics) {
-      const lines = result.issues.slice(0, 15).map((issue, i) => {
-        return `${i + 1}. ${ruleLabel(issue.rule_id)}: „${issue.text}“ – ${issue.message.slice(0, 200)}`;
-      });
-      const more = result.issues.length > 15 ? `… und ${result.issues.length - 15} weitere Verstöße.` : "";
-      const verdict =
-        result.statistics.total_violations === 0
-          ? "Der Text entspricht den Regeln für Leichte Sprache."
-          : "Behebe die genannten Verstöße und prüfe erneut (falls Prüfrunden übrig sind).";
-      return [
-        `Verstöße gesamt: ${result.statistics.total_violations} (eindeutig: ${result.statistics.unique_violations}).`,
-        "Gefundene Verstöße:",
-        ...lines,
-        more,
-        verdict,
-      ]
-        .filter(Boolean)
-        .join("\n");
-    }
-    return `Annotierter Text (Markierungen in eckigen Klammern = Probleme):\n${result.annotatedText}`;
   };
 
   // Nachanalyse des korrigierten Textes für den Vorher/Nachher-Vergleich
@@ -677,12 +595,6 @@ export default function App() {
                           <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>
                         </>
                       )}
-                      {settings.selfCheck && (
-                        <>
-                          {" "}
-                          <code className="text-slate-400">Selbstprüfung: an (Tool: analyse_text, max. {clampRounds(settings.maxRounds)} Runden)</code>
-                        </>
-                      )}
                     </p>
                     {conversation.map((msg, i) => {
                       const label =
@@ -690,13 +602,11 @@ export default function App() {
                           ? "System-Prompt"
                           : msg.role === "user"
                             ? "Nutzer-Prompt"
-                            : msg.role === "assistant"
-                              ? "Antwort des Modells"
-                              : "Tool-Ergebnis (analyse_text)";
+                            : "Antwort des Modells";
                       return (
                         <div key={i}>
                           <p
-                            className={`mb-1 text-xs font-semibold uppercase tracking-wide ${msg.role === "tool" ? "text-amber-400" : "text-slate-500"}`}
+                            className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500"
                           >
                             {label}
                           </p>
@@ -705,23 +615,7 @@ export default function App() {
                               {msg.content}
                             </pre>
                           )}
-                          {msg.tool_calls?.map((tc, j) => (
-                            <div key={j} className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-                              <p className="text-amber-200">
-                                → Modell ruft Tool auf: <code className="text-amber-100">{tc.function.name}</code>
-                              </p>
-                              <pre className="mt-1 whitespace-pre-wrap text-xs text-amber-200/80">
-                                {(() => {
-                                  try {
-                                    return JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
-                                  } catch {
-                                    return tc.function.arguments;
-                                  }
-                                })()}
-                              </pre>
-                            </div>
-                          ))}
-                          {msg.role === "assistant" && !msg.content && !msg.tool_calls?.length && stage === "fixing" && (
+                          {msg.role === "assistant" && !msg.content && stage === "fixing" && (
                             <p className="text-sm text-slate-500">(läuft noch – siehe Live-Fenster unten)</p>
                           )}
                         </div>
@@ -835,8 +729,6 @@ export default function App() {
                 </div>
               )}
 
-              {fixWarning && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">{fixWarning}</p>}
-
               {fixError && (
                 <p className="mt-3 rounded-lg bg-red-950/60 p-3 text-sm text-red-300">
                   {fixError}
@@ -852,9 +744,7 @@ export default function App() {
                     Ansicht umschalten: Änderungen, Vorher oder Nachher.
                     Im Diff-Modus: Rote, durchgestrichene Wörter wurden entfernt, grüne Wörter neu hinzugefügt.
                   </p>
-                  <p className="text-sm text-slate-500">
-                    Runden: {Math.max(1, fixRound)} · Tool-Aufrufe: {toolCallCount} · Tokens (ca.): {tokenCount}
-                  </p>
+                  <p className="text-sm text-slate-500">Tokens (ca.): {tokenCount}</p>
                   <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
                     <FixedResult original={analysedText} corrected={fixedText} />
                   </div>
