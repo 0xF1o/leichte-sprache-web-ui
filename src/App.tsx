@@ -1,104 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_ANALYSE_URL, analyseText, violationCount } from "./lib/analyse";
+import { analyseText, violationCount } from "./lib/analyse";
 import { buildFixMessages, cleanModelOutput, streamChat, type ChatMessage } from "./lib/llm";
+import { clampInt, defaultSettings } from "./lib/settings";
+import { copyToClipboard } from "./lib/clipboard";
+import { formatSeconds } from "./lib/format";
 import type { AnalyseResult, AppSettings, FixRound } from "./lib/types";
 import { buildReportMarkdown, downloadMarkdown, reportFilename } from "./lib/report";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
 import { FixedReport } from "./components/FixedReport";
-import { LiveRounds } from "./components/LiveRounds";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { Spinner } from "./components/Spinner";
+import { PromptDetails } from "./components/PromptDetails";
+import { FixLiveView } from "./components/FixLiveView";
+import { FixAborted } from "./components/FixAborted";
 
-const STORAGE_KEY = "lswui.llmsettings";
 const BASE_TITLE = "Leichte Sprache – Text prüfen und verbessern";
 
 type Stage = "idle" | "analysing" | "results" | "fixing" | "fixed";
-
-const REASONING_EFFORTS: readonly string[] = ["", "minimal", "low", "medium", "high", "xhigh"];
-
-/** Zahl auf ganzzahligen Wert im Bereich begrenzen (Standard bei ungültigem Input). */
-function clampInt(v: number | undefined, min: number, max: number, dflt: number): number {
-  const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : dflt;
-  return Math.max(min, Math.min(max, n));
-}
-
-/**
- * Validiert die in localStorage gespeicherten Einstellungen (unbekannter
- * Ursprung) und gibt nur Felder zurück, die den erwarteten Typen entsprechen.
- */
-function sanitizeStored(raw: unknown): Partial<AppSettings> {
-  if (!raw || typeof raw !== "object") return {};
-  const o = raw as Record<string, unknown>;
-  const str = (k: string): string | undefined => (typeof o[k] === "string" ? (o[k] as string) : undefined);
-  const out: Partial<AppSettings> = {};
-  const a = str("analyseUrl");
-  if (a !== undefined) out.analyseUrl = a;
-  const b = str("baseUrl");
-  if (b !== undefined) out.baseUrl = b;
-  const m = str("model");
-  if (m !== undefined) out.model = m;
-  const k = str("apiKey");
-  if (k !== undefined) out.apiKey = k;
-  const r = str("reasoningEffort");
-  if (r !== undefined) out.reasoningEffort = REASONING_EFFORTS.includes(r) ? (r as AppSettings["reasoningEffort"]) : "";
-  if (typeof o.fixRounds === "number") out.fixRounds = clampInt(o.fixRounds, 1, 10, 3);
-  if (typeof o.tolerance === "number") out.tolerance = clampInt(o.tolerance, 0, 999, 0);
-  return out;
-}
-
-function defaultSettings(): AppSettings {
-  let stored: Partial<AppSettings> = {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    stored = raw ? sanitizeStored(JSON.parse(raw)) : {};
-  } catch {
-    /* ignore */
-  }
-  // Bewusst „??“, nicht „||“: ein bewusst geleertes Feld (z. B. "") bleibt leer,
-  // statt still zurück auf den Build-Zeit-Wert zu fallen.
-  return {
-    analyseUrl: stored.analyseUrl ?? import.meta.env.LSWUI_ANALYSE_URL ?? DEFAULT_ANALYSE_URL,
-    baseUrl: stored.baseUrl ?? import.meta.env.LSWUI_BASE_URL ?? "",
-    model: stored.model ?? import.meta.env.LSWUI_MODEL ?? "",
-    apiKey: stored.apiKey ?? import.meta.env.LSWUI_API_KEY ?? "",
-    reasoningEffort: stored.reasoningEffort ?? "",
-    fixRounds: stored.fixRounds ?? 3,
-    tolerance: stored.tolerance ?? 0,
-  };
-}
-
-/** Text in die Zwischenablage – mit Fallback für Kontexte ohne Clipboard-Write-Zugriff. */
-async function copyToClipboard(value: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(value);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = value;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function Spinner() {
-  return <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent align-middle" />;
-}
-
-function formatSeconds(total: number): string {
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 ? `${m} Min ${s} s` : `${s} s`;
-}
 
 export default function App() {
   const [text, setText] = useState("");
@@ -236,14 +156,11 @@ export default function App() {
     return (last.n - first.n) / dt;
   })();
 
-  const rateText =
-    tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
+  const rateText = tokensPerSecond != null ? ` · ${tokensPerSecond.toFixed(1).replace(".", ",")} Tok/s` : "";
 
   /** Laufzeit-/Token-Metadaten der laufenden Korrektur */
   const fixMeta =
-    fixPhase != null
-      ? `Laufzeit: ${formatSeconds(fixSeconds)}` + (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") + rateText
-      : null;
+    fixPhase != null ? `Laufzeit: ${formatSeconds(fixSeconds)}` + (tokenCount > 0 ? ` · ${tokenCount} Tokens` : "") + rateText : null;
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -548,8 +465,8 @@ export default function App() {
             <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <h2 className="mb-2 text-lg font-semibold">Gefundene Probleme</h2>
               <p className="text-sm text-slate-400">
-                Diese Analyse liefert nur den annotierten Text (format=annotated_text) – daher gibt es keine
-                detaillierte Problem-Liste. Die markierten Stellen sind unten im Text.
+                Diese Analyse liefert nur den annotierten Text (format=annotated_text) – daher gibt es keine detaillierte
+                Problem-Liste. Die markierten Stellen sind unten im Text.
               </p>
             </section>
           )}
@@ -561,11 +478,7 @@ export default function App() {
                 ? "Markierte Stellen (✗) haben Probleme. Zeiger darauf bewegen für Details."
                 : "Gelb markierte Stellen haben Probleme. Zeiger darauf bewegen für Details."}
             </p>
-            {annotatedOnly ? (
-              <AnnotatedMarkers text={analysis.annotatedText} />
-            ) : (
-              <AnnotatedText text={analysedText} issues={analysis.issues} />
-            )}
+            {annotatedOnly ? <AnnotatedMarkers text={analysis.annotatedText} /> : <AnnotatedText text={analysedText} issues={analysis.issues} />}
           </section>
 
           {analysis.issues.length > 0 || annotatedOnly ? (
@@ -589,173 +502,47 @@ export default function App() {
               </div>
 
               {!settingsValid && (
-                <p className="mt-2 text-sm text-amber-400">
-                  Bitte in den Einstellungen Analyse-URL, Modell-Basis-URL und Modell ergänzen.
-                </p>
+                <p className="mt-2 text-sm text-amber-400">Bitte in den Einstellungen Analyse-URL, Modell-Basis-URL und Modell ergänzen.</p>
               )}
 
               {conversation && (
-                <details
-                  className="mt-4 rounded-lg border border-slate-800 bg-slate-950"
-                  open={showPrompt}
-                  onToggle={(e) => setShowPrompt((e.target as HTMLDetailsElement).open)}
-                >
-                  <summary className="cursor-pointer select-none p-3 text-sm font-semibold text-slate-300">
-                    Prompt und Konversation mit der KI anzeigen
-                  </summary>
-                  <div className="space-y-4 px-3 pb-3">
-                    <p className="text-xs text-slate-500">
-                      Anfrage-Parameter: <code className="text-slate-400">model={settings.model}</code>
-                      {settings.reasoningEffort && (
-                        <>
-                          {" "}
-                          <code className="text-slate-400">reasoning_effort={settings.reasoningEffort}</code>
-                        </>
-                      )}
-                    </p>
-                    {conversation.map((msg, i) => {
-                      const label =
-                        msg.role === "system"
-                          ? "System-Prompt"
-                          : msg.role === "user"
-                            ? "Nutzer-Prompt"
-                            : "Antwort des Modells";
-                      return (
-                        <div key={i}>
-                          <p
-                            className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500"
-                          >
-                            {label}
-                          </p>
-                          {msg.content && (
-                            <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
-                              {msg.content}
-                            </pre>
-                          )}
-                          {msg.role === "assistant" && !msg.content && stage === "fixing" && (
-                            <p className="text-sm text-slate-500">(läuft noch – siehe Live-Fenster unten)</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {thinkingText && (
-                      <div>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">
-                          Denken des Modells (Thinking)
-                        </p>
-                        <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
-                          {thinkingText}
-                        </pre>
-                      </div>
-                    )}
-                    <div>
-                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Antwort des Modells {stage === "fixing" && "(läuft noch)"}
-                      </p>
-                      <pre className="whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
-                        {stage === "fixing"
-                          ? fixedText || "(Noch keine Antwort – siehe Live-Fenster unten)"
-                          : fixedText || "(keine Antwort erhalten)"}
-                      </pre>
-                    </div>
-                  </div>
-                </details>
+                <PromptDetails
+                  conversation={conversation}
+                  showPrompt={showPrompt}
+                  onToggle={setShowPrompt}
+                  model={settings.model}
+                  reasoningEffort={settings.reasoningEffort}
+                  thinkingText={thinkingText}
+                  fixedText={fixedText}
+                  fixing={stage === "fixing"}
+                />
               )}
 
               {stage === "fixing" && fixPhase && fixMeta && (
-                <div className="mt-4 space-y-3">
-                  {/* Live-Bericht: fertige Runden erscheinen, sobald ihre Prüfung da ist;
-                      die laufende Runde trägt den Status (Runde x/y, Phase, Laufzeit) */}
-                  {analysis && (
-                    <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
-                      <LiveRounds
-                        analysis={analysis}
-                        rounds={fixRoundList}
-                        runningRound={fixRound > fixRoundList.length ? fixRound : null}
-                        maxRounds={fixMaxRounds}
-                        runningLabel={fixPhase}
-                        runningMeta={fixMeta}
-                        tolerance={tolerance}
-                      />
-                    </div>
-                  )}
-
-                  {thinkingText && (
-                    <div>
-                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">
-                        Das Modell denkt (Thinking) – das kann einige Minuten dauern
-                      </p>
-                      <div
-                        ref={thinkingPaneRef}
-                        className="h-40 overflow-y-auto rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 font-mono text-sm text-amber-200"
-                      >
-                        <span className="whitespace-pre-wrap">{thinkingText}</span>
-                        <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-amber-300 align-middle" />
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Antwort des Modells
-                    </p>
-                    <div
-                      ref={livePaneRef}
-                      className="h-40 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-100"
-                    >
-                      {fixedText ? (
-                        <>
-                          <span className="whitespace-pre-wrap">{fixedText}</span>
-                          <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-slate-100 align-middle" />
-                        </>
-                      ) : (
-                        <span className="text-slate-500">
-                          {thinkingText
-                            ? "Das Modell denkt noch – die Antwort erscheint hier, sobald sie geschrieben wird."
-                            : "Hier erscheint die Antwort tokenweise, sobald das Modell zu schreiben beginnt."}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                <FixLiveView
+                  analysis={analysis}
+                  rounds={fixRoundList}
+                  runningRound={fixRound > fixRoundList.length ? fixRound : null}
+                  maxRounds={fixMaxRounds}
+                  runningLabel={fixPhase}
+                  runningMeta={fixMeta}
+                  tolerance={tolerance}
+                  thinkingText={thinkingText}
+                  fixedText={fixedText}
+                  livePaneRef={livePaneRef}
+                  thinkingPaneRef={thinkingPaneRef}
+                />
               )}
 
               {stage === "results" && fixAborted && (
-                <div className="mt-4 space-y-3">
-                  <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">
-                    Korrektur nach {formatSeconds(fixSeconds)} abgebrochen
-                    {tokenCount > 0 && ` (${tokenCount} Tokens erhalten)`}. Der bis dahin empfangene Text ist unten.
-                  </p>
-                  {fixedText ? (
-                    <div>
-                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Teilweise Antwort des Modells
-                      </p>
-                      <div className="rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-sm text-slate-200 whitespace-pre-wrap">
-                        {fixedText}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleCopy()}
-                        className="mt-2 rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
-                      >
-                        Teiltext kopieren
-                      </button>
-                      {copyNote && <p className="mt-2 text-sm text-slate-300">{copyNote}</p>}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      Es ist noch keine Antwort angekommen – nur Denk-Tokens. Bitte erneut versuchen.
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void handleFix()}
-                    className="rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-500"
-                  >
-                    Erneut korrigieren
-                  </button>
-                </div>
+                <FixAborted
+                  seconds={fixSeconds}
+                  tokenCount={tokenCount}
+                  fixedText={fixedText}
+                  copyNote={copyNote}
+                  onCopy={() => void handleCopy()}
+                  onFixAgain={() => void handleFix()}
+                />
               )}
 
               {fixError && (
@@ -765,7 +552,7 @@ export default function App() {
                 </p>
               )}
 
-              {stage === "fixed" && analysis && (
+              {stage === "fixed" && (
                 <FixedReport
                   analysis={analysis}
                   analysedText={analysedText}
