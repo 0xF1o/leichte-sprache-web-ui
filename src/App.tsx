@@ -7,6 +7,7 @@ import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
 import { FixedReport } from "./components/FixedReport";
+import { roundEntries, RoundsReport } from "./components/RoundsReport";
 import { SettingsPanel } from "./components/SettingsPanel";
 
 const STORAGE_KEY = "lswui.llmsettings";
@@ -666,6 +667,30 @@ export default function App() {
                   <p className="flex items-center gap-2 text-sm font-medium text-slate-200">
                     <Spinner /> {phaseText}
                   </p>
+
+                  {/* Live-Bericht: fertige Runden erscheinen, sobald ihre Prüfung da ist */}
+                  {analysis && (
+                    <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
+                      <RoundsReport
+                        tolerance={tolerance}
+                        rounds={[
+                          ...roundEntries(analysis, fixRoundList),
+                          // Platzhalterzeile für die gerade laufende Runde
+                          ...(fixRound > fixRoundList.length
+                            ? [
+                                {
+                                  label: `Runde ${fixRound} …`,
+                                  analysis: null,
+                                  seconds: null,
+                                  tokens: null,
+                                  failed: false,
+                                },
+                              ]
+                            : []),
+                        ]}
+                      />
+                    </div>
+                  )}
 
                   {thinkingText && (
                     <div>

@@ -3,7 +3,7 @@ import { violationCount } from "../lib/analyse";
 import { ruleLabel } from "../lib/llm";
 import type { AnalyseResult, FixRound } from "../lib/types";
 import { FixedResult } from "./FixedResult";
-import { RoundsReport } from "./RoundsReport";
+import { roundEntries, RoundsReport } from "./RoundsReport";
 
 function formatSeconds(total: number): string {
   const m = Math.floor(total / 60);
@@ -202,19 +202,7 @@ export const FixedReport = memo(function FixedReport({
 
       {fixRoundList.length > 0 && (
         <div className="rounded-lg border border-slate-800 bg-slate-950 p-4">
-          <RoundsReport
-            tolerance={tolerance}
-            rounds={[
-              { label: "Original", analysis, seconds: null, tokens: null, failed: false },
-              ...fixRoundList.map((r) => ({
-                label: `Runde ${r.round}`,
-                analysis: r.analysis,
-                seconds: r.seconds,
-                tokens: r.tokens,
-                failed: !r.accepted,
-              })),
-            ]}
-          />
+          <RoundsReport tolerance={tolerance} rounds={roundEntries(analysis, fixRoundList)} />
           {lastAccepted?.analysis && (
             <div className="mt-4 border-t border-slate-800 pt-3">
               <h3 className="mb-2 font-semibold">Vorher / Nachher (Regel-Details)</h3>

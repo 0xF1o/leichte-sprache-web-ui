@@ -1,5 +1,5 @@
 import { violationCount } from "../lib/analyse";
-import type { AnalyseResult } from "../lib/types";
+import type { AnalyseResult, FixRound } from "../lib/types";
 
 export interface RoundEntry {
   label: string;
@@ -10,6 +10,20 @@ export interface RoundEntry {
   tokens: number | null;
   /** true = Runde verworfen (Verschlechterung / fehlgeschlagene Prüfung) */
   failed: boolean;
+}
+
+/** Zeilen für den Bericht: Original + alle Korrektur-Runden. */
+export function roundEntries(analysis: AnalyseResult, rounds: FixRound[]): RoundEntry[] {
+  return [
+    { label: "Original", analysis, seconds: null, tokens: null, failed: false },
+    ...rounds.map((r) => ({
+      label: `Runde ${r.round}`,
+      analysis: r.analysis,
+      seconds: r.seconds,
+      tokens: r.tokens,
+      failed: !r.accepted,
+    })),
+  ];
 }
 
 function formatSeconds(total: number): string {
