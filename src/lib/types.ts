@@ -41,6 +41,12 @@ export interface FixRound {
   seconds: number;
   /** Tokens der Runde (Antwort + Denken) */
   tokens: number;
+  /**
+   * true, wenn das Ergebnis der Runde mindestens so gut war wie der vorherige
+   * Stand und übernommen wurde. false = verworfen (Verschlechterung oder
+   * fehlgeschlagene Prüfung) – der vorherige Text bleibt das Ergebnis.
+   */
+  accepted: boolean;
 }
 
 export interface AppSettings {

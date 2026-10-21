@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { DEFAULT_ANALYSE_URL, analyseText, violationCount } from "./lib/analyse";
 import { buildFixMessages, cleanModelOutput, streamChat, type ChatMessage } from "./lib/llm";
 import type { AnalyseResult, AppSettings, FixRound } from "./lib/types";
+import { buildReportMarkdown, downloadMarkdown, reportFilename } from "./lib/report";
 import { AnnotatedText } from "./components/AnnotatedText";
 import { AnnotatedMarkers } from "./components/AnnotatedMarkers";
 import { IssueList } from "./components/IssueList";
@@ -130,8 +131,11 @@ export default function App() {
   const [fixRound, setFixRound] = useState(0);
   /** true, während das Ergebnis einer Runde analysiert wird */
   const [fixChecking, setFixChecking] = useState(false);
-  /** Stop-Grund: "clean" = Toleranz erreicht, "limit" = Rundenlimit, "error" = Abbruch durch Fehler */
-  const [fixStopReason, setFixStopReason] = useState<"clean" | "limit" | "error" | null>(null);
+  /**
+   * Stop-Grund: "clean" = Toleranz erreicht, "limit" = Rundenlimit,
+   * "error" = Abbruch durch Fehler, "failed" = Runde verworfen (Verschlechterung)
+   */
+  const [fixStopReason, setFixStopReason] = useState<"clean" | "limit" | "error" | "failed" | null>(null);
   const [fixWarning, setFixWarning] = useState<string | null>(null);
   /** Angezeigte Version im Versions-Vergleich: 0 = Original, n = Runde n */
   const [selVersion, setSelVersion] = useState(0);
@@ -315,8 +319,11 @@ export default function App() {
     // Arbeitszustand des Loops (lokal, damit Abbruch/Fehler keinen veralteten
     // React-State weiterverwenden)
     let history: FixRound[] = [];
+    let stopReason: "clean" | "limit" | "error" | "failed" | null = null;
     let currentText = analysedText;
     let currentAnalysis: AnalyseResult = analysis;
+    /** Verstöße des aktuell übernommenen Textes (Start: Original) */
+    let baselineCount = violationCount(analysis);
     const tokenCallbacks = {
       onToken: (chunk: string) => {
         tokensRef.current += 1;
@@ -368,10 +375,15 @@ export default function App() {
           analyseFailed = true;
           setFixWarning(
             `Die Prüfung nach Runde ${round} ist fehlgeschlagen (${(err as Error).message}). ` +
-              "Der Text wurde deshalb nicht weiter verbessert.",
+              "Diese Runde wurde nicht übernommen.",
           );
         }
         setFixChecking(false);
+        const count = violationCount(roundAnalysis);
+        // Nur übernehmen, wenn die Runde nicht schlechter ist: Das Modell kann
+        // verschlechtern – dann bleibt der bessere Stand, die Runde wird als
+        // verworfen markiert und die Korrektur endet.
+        const accepted = !analyseFailed && (count == null || baselineCount == null || count <= baselineCount);
         history = [
           ...history,
           {
@@ -380,19 +392,36 @@ export default function App() {
             analysis: roundAnalysis,
             seconds: Math.round((Date.now() - roundStart) / 1000),
             tokens: tokensRef.current - tokensAtRoundStart,
+            accepted,
           },
         ];
         setFixRoundList(history);
-        const count = violationCount(roundAnalysis);
-        if (analyseFailed || (count != null && count <= tol)) {
-          setFixStopReason(analyseFailed ? "error" : "clean");
+        if (!accepted) {
+          // Nicht stoppen: Es wird mit dem besseren Stand weiterprobiert, bis
+          // die letzte Runde erreicht ist. currentText/currentAnalysis und
+          // baselineCount bleiben deshalb unverändert.
+          stopReason = analyseFailed ? "error" : "failed";
+          continue;
+        }
+        // Angenommene Runde löst frühere Ablehnungen auf
+        stopReason = null;
+        if (count != null && count <= tol) {
+          stopReason = "clean";
           break;
         }
         currentText = cleaned;
         currentAnalysis = roundAnalysis as AnalyseResult;
-        if (round === maxRounds) setFixStopReason("limit");
+        baselineCount = count;
       }
-      setSelVersion(history.length);
+      if (stopReason == null) stopReason = "limit"; // Runden aufgebraucht, Toleranz nicht erreicht
+      setFixStopReason(stopReason);
+      // Ergebnis = letzte angenommene Runde (oder Original, falls keine).
+      // Version-Nummer = POSITION der Runde in der Liste (dazwischen können
+      // verworfene Runden liegen).
+      const lastAcceptedPos = history.map((r) => r.accepted).lastIndexOf(true); // -1 = keine
+      const lastAccepted = lastAcceptedPos >= 0 ? history[lastAcceptedPos] : null;
+      setFixedText(lastAccepted ? lastAccepted.text : analysedText);
+      setSelVersion(Math.max(0, lastAcceptedPos + 1));
       setStage("fixed");
       setFlash({ text: "✅ Fertig! – Leichte Sprache", key: Date.now() });
     } catch (err) {
@@ -406,8 +435,10 @@ export default function App() {
       const msg = (err as Error).message || String(err);
       if (history.length > 0) {
         // Frühere Runde steht: beste Version zeigen, statt alles zu verwerfen
-        setFixedText(history[history.length - 1].text);
-        setSelVersion(history.length);
+        const lastAcceptedPos = history.map((r) => r.accepted).lastIndexOf(true); // -1 = keine
+        const lastAccepted = lastAcceptedPos >= 0 ? history[lastAcceptedPos] : null;
+        setFixedText(lastAccepted ? lastAccepted.text : analysedText);
+        setSelVersion(Math.max(0, lastAcceptedPos + 1));
         setFixWarning(`Runde ${history.length + 1} ist fehlgeschlagen (${msg}). Es wird der letzte gute Entwurf angezeigt.`);
         setFixStopReason("error");
         setStage("fixed");
@@ -421,6 +452,22 @@ export default function App() {
   const handleUseFixed = () => {
     setText(fixedText);
     void handleAnalyse(fixedText);
+  };
+
+  /** Bericht (Markdown) mit allen Runden, Zahlen und Änderungen herunterladen. */
+  const handleExport = () => {
+    if (!analysis) return;
+    const md = buildReportMarkdown({
+      analysedText,
+      analysis,
+      rounds: fixRoundList,
+      settings,
+      totalSeconds: fixSeconds,
+      firstTokenSeconds,
+      totalTokens: tokenCount,
+      stopReason: fixStopReason,
+    });
+    downloadMarkdown(reportFilename(), md);
   };
 
   const handleCopy = async () => {
@@ -723,6 +770,7 @@ export default function App() {
                   onUseFixed={handleUseFixed}
                   onCopy={() => void handleCopy()}
                   onFixAgain={() => void handleFix()}
+                  onExport={handleExport}
                 />
               )}
             </section>

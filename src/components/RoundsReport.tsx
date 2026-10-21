@@ -8,6 +8,8 @@ export interface RoundEntry {
   seconds: number | null;
   /** Tokens der Runde (null = nicht gemessen) */
   tokens: number | null;
+  /** true = Runde verworfen (Verschlechterung / fehlgeschlagene Prüfung) */
+  failed: boolean;
 }
 
 function formatSeconds(total: number): string {
@@ -37,8 +39,11 @@ export function RoundsReport({ rounds, tolerance }: { rounds: RoundEntry[]; tole
             const prev = i > 0 ? violationCount(rounds[i - 1].analysis) : null;
             const d = c != null && prev != null ? c - prev : null;
             return (
-              <tr key={r.label} className="border-t border-slate-800">
-                <td className="py-1 text-slate-300">{r.label}</td>
+              <tr key={r.label} className={`border-t border-slate-800 ${r.failed ? "bg-red-950/30" : ""}`}>
+                <td className="py-1 text-slate-300">
+                  {r.label}
+                  {r.failed && <span className="ml-2 text-xs font-semibold text-red-400">✗ verworfen</span>}
+                </td>
                 <td className={c != null && c > tolerance ? "text-red-300" : "text-slate-300"}>{c ?? "–"}</td>
                 <td
                   className={

@@ -122,8 +122,11 @@ interface Props {
   analysedText: string;
   /** Alle abgeschlossenen Korrektur-Runden */
   fixRoundList: FixRound[];
-  /** Stop-Grund: "clean" = Toleranz erreicht, "limit" = Rundenlimit, "error" = Abbruch durch Fehler */
-  fixStopReason: "clean" | "limit" | "error" | null;
+  /**
+   * Stop-Grund: "clean" = Toleranz erreicht, "limit" = Rundenlimit,
+   * "error" = Abbruch durch Fehler, "failed" = Runde verworfen (Verschlechterung)
+   */
+  fixStopReason: "clean" | "limit" | "error" | "failed" | null;
   fixMaxRounds: number;
   tolerance: number;
   fixSeconds: number;
@@ -137,6 +140,8 @@ interface Props {
   onUseFixed: () => void;
   onCopy: () => void;
   onFixAgain: () => void;
+  /** Bericht (Markdown) mit allen Runden, Zahlen und Änderungen erzeugen */
+  onExport: () => void;
 }
 
 /**
@@ -160,8 +165,12 @@ export const FixedReport = memo(function FixedReport({
   onUseFixed,
   onCopy,
   onFixAgain,
+  onExport,
 }: Props) {
   const lastRound = fixRoundList[fixRoundList.length - 1];
+  /** Letztes übernommenes Ergebnis (verworfene Runden werden übersprungen) */
+  const lastAccepted = [...fixRoundList].reverse().find((r) => r.accepted) ?? null;
+  const acceptedCount = violationCount(lastAccepted?.analysis ?? null);
   const finalCount = violationCount(lastRound?.analysis ?? null);
 
   return (
@@ -179,8 +188,14 @@ export const FixedReport = memo(function FixedReport({
       )}
       {fixStopReason === "limit" && (
         <p className="text-sm text-amber-300">
-          Maximale Rundenzahl ({fixMaxRounds}) erreicht. Letzter Stand: {finalCount ?? "keine Prüfung möglich"}{" "}
+          Maximale Rundenzahl ({fixMaxRounds}) erreicht. Letzter Stand: {acceptedCount ?? "keine Prüfung möglich"}{" "}
           Verstöße (Toleranz: {tolerance}).
+        </p>
+      )}
+      {fixStopReason === "failed" && (
+        <p className="text-sm font-medium text-red-300">
+          Runde {lastRound?.round} hat den Text verschlechtert ({acceptedCount ?? "?"} → {finalCount ?? "?"} Verstöße) und
+          wurde verworfen. Angezeigt wird {lastAccepted ? `Runde ${lastAccepted.round}` : "das Original"}.
         </p>
       )}
       {fixWarning && <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">{fixWarning}</p>}
@@ -190,19 +205,20 @@ export const FixedReport = memo(function FixedReport({
           <RoundsReport
             tolerance={tolerance}
             rounds={[
-              { label: "Original", analysis, seconds: null, tokens: null },
+              { label: "Original", analysis, seconds: null, tokens: null, failed: false },
               ...fixRoundList.map((r) => ({
                 label: `Runde ${r.round}`,
                 analysis: r.analysis,
                 seconds: r.seconds,
                 tokens: r.tokens,
+                failed: !r.accepted,
               })),
             ]}
           />
-          {lastRound?.analysis && (
+          {lastAccepted?.analysis && (
             <div className="mt-4 border-t border-slate-800 pt-3">
               <h3 className="mb-2 font-semibold">Vorher / Nachher (Regel-Details)</h3>
-              <RecheckReport before={analysis} after={lastRound.analysis} />
+              <RecheckReport before={analysis} after={lastAccepted.analysis} />
             </div>
           )}
         </div>
@@ -216,18 +232,19 @@ export const FixedReport = memo(function FixedReport({
           {fixRoundList.map((r) => (
             <VersionButton key={r.round} active={shownVersion === r.round} onClick={() => onSelVersion(r.round)}>
               Runde {r.round}
+              {!r.accepted && <span className="ml-1 text-red-400">✗</span>}
             </VersionButton>
           ))}
-          {lastRound && (
+          {lastAccepted && (
             <VersionButton active={shownVersion === -1} onClick={() => onSelVersion(-1)}>
-              Original → Runde {lastRound.round}
+              Original → Runde {lastAccepted.round}
             </VersionButton>
           )}
         </div>
         {shownVersion === 0 ? (
           <div className="whitespace-pre-wrap text-lg leading-relaxed">{analysedText}</div>
-        ) : shownVersion === -1 && lastRound ? (
-          <FixedResult key="original-final" original={analysedText} corrected={lastRound.text} />
+        ) : shownVersion === -1 && lastAccepted ? (
+          <FixedResult key="original-final" original={analysedText} corrected={lastAccepted.text} />
         ) : (
           <FixedResult
             key={shownVersion}
@@ -264,6 +281,13 @@ export const FixedReport = memo(function FixedReport({
           className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
         >
           Erneut korrigieren
+        </button>
+        <button
+          type="button"
+          onClick={onExport}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-slate-300 hover:bg-slate-800"
+        >
+          Bericht exportieren (Markdown)
         </button>
       </div>
     </div>
